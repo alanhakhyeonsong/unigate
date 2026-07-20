@@ -17,19 +17,19 @@ import org.springframework.context.annotation.Configuration
  */
 @Configuration
 class GatewayRouteConfig {
-    @Bean
-    fun gatewayRoutes(
-        builder: RouteLocatorBuilder,
-        @Value("\${unigate.downstream.demo-uri}") demoUri: String,
-    ): RouteLocator =
-        builder
-            .routes()
-            .route("downstream-demo") { route ->
-                route
-                    .path("/api/**")
-                    // 게이트웨이 진입 경로에서 /api 한 단계를 떼고 다운스트림에 전달한다.
-                    // /api/echo -> /echo
-                    .filters { it.stripPrefix(1) }
-                    .uri(demoUri)
-            }.build()
+  @Bean
+  fun gatewayRoutes(
+    builder: RouteLocatorBuilder,
+    @Value("\${unigate.downstream.demo-uri}") demoUri: String,
+  ): RouteLocator =
+    builder
+      .routes()
+      .route("downstream-demo") { route ->
+        route
+          .path("/api/**")
+          // 게이트웨이 진입 경로에서 /api 한 단계를 떼고 다운스트림에 전달한다.
+          // /api/echo -> /echo
+          .filters { it.stripPrefix(1) }
+          .uri(demoUri)
+      }.build()
 }

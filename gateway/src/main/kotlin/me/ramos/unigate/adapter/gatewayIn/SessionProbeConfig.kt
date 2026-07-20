@@ -24,26 +24,26 @@ import org.springframework.web.reactive.function.server.coRouter
 @Configuration
 @Profile("local")
 class SessionProbeConfig {
-    @Bean
-    fun sessionProbeRoutes(): RouterFunction<ServerResponse> =
-        coRouter {
-            GET("/debug/session") { request ->
-                val session = request.awaitSession()
+  @Bean
+  fun sessionProbeRoutes(): RouterFunction<ServerResponse> =
+    coRouter {
+      GET("/debug/session") { request ->
+        val session = request.awaitSession()
 
-                // 속성을 넣는 순간 세션이 "시작"되고 저장소에 기록된다.
-                // 아무것도 넣지 않으면 세션 ID 는 생기지만 저장되지 않는다.
-                val visitCount = (session.attributes["visitCount"] as? Int ?: 0) + 1
-                session.attributes["visitCount"] = visitCount
+        // 속성을 넣는 순간 세션이 "시작"되고 저장소에 기록된다.
+        // 아무것도 넣지 않으면 세션 ID 는 생기지만 저장되지 않는다.
+        val visitCount = (session.attributes["visitCount"] as? Int ?: 0) + 1
+        session.attributes["visitCount"] = visitCount
 
-                ServerResponse.ok().bodyValueAndAwait(
-                    mapOf(
-                        "sessionId" to session.id,
-                        "visitCount" to visitCount,
-                        "createdAt" to session.creationTime.toString(),
-                        "maxIdleTime" to session.maxIdleTime.toString(),
-                        "thread" to Thread.currentThread().name,
-                    ),
-                )
-            }
-        }
+        ServerResponse.ok().bodyValueAndAwait(
+          mapOf(
+            "sessionId" to session.id,
+            "visitCount" to visitCount,
+            "createdAt" to session.creationTime.toString(),
+            "maxIdleTime" to session.maxIdleTime.toString(),
+            "thread" to Thread.currentThread().name,
+          ),
+        )
+      }
+    }
 }

@@ -25,43 +25,45 @@ import reactor.core.publisher.Mono
  * 로깅 외의 작업을 여기에 넣지 않는다.
  */
 @Component
-class RequestLoggingFilter : GlobalFilter, Ordered {
-    private val log = LoggerFactory.getLogger(javaClass)
+class RequestLoggingFilter :
+  GlobalFilter,
+  Ordered {
+  private val log = LoggerFactory.getLogger(javaClass)
 
-    override fun filter(
-        exchange: ServerWebExchange,
-        chain: GatewayFilterChain,
-    ): Mono<Void> {
-        val request = exchange.request
-        val startedAt = System.nanoTime()
+  override fun filter(
+    exchange: ServerWebExchange,
+    chain: GatewayFilterChain,
+  ): Mono<Void> {
+    val request = exchange.request
+    val startedAt = System.nanoTime()
 
-        log.info(
-            "[pre ] {} {} thread={}",
+    log.info(
+      "[pre ] {} {} thread={}",
+      request.method,
+      request.uri.path,
+      Thread.currentThread().name,
+    )
+
+    return chain
+      .filter(exchange)
+      .then(
+        Mono.fromRunnable<Void> {
+          val elapsedMs = (System.nanoTime() - startedAt) / 1_000_000
+          log.info(
+            "[post] {} {} status={} elapsedMs={} thread={}",
             request.method,
             request.uri.path,
+            exchange.response.statusCode,
+            elapsedMs,
             Thread.currentThread().name,
-        )
+          )
+        },
+      )
+  }
 
-        return chain
-            .filter(exchange)
-            .then(
-                Mono.fromRunnable<Void> {
-                    val elapsedMs = (System.nanoTime() - startedAt) / 1_000_000
-                    log.info(
-                        "[post] {} {} status={} elapsedMs={} thread={}",
-                        request.method,
-                        request.uri.path,
-                        exchange.response.statusCode,
-                        elapsedMs,
-                        Thread.currentThread().name,
-                    )
-                },
-            )
-    }
-
-    /**
-     * pre 구간에서 가장 먼저 실행된다.
-     * Reactor 체인 구조상 **가장 먼저 진입한 필터의 post 구간이 가장 나중에** 실행된다.
-     */
-    override fun getOrder(): Int = Ordered.HIGHEST_PRECEDENCE
+  /**
+   * pre 구간에서 가장 먼저 실행된다.
+   * Reactor 체인 구조상 **가장 먼저 진입한 필터의 post 구간이 가장 나중에** 실행된다.
+   */
+  override fun getOrder(): Int = Ordered.HIGHEST_PRECEDENCE
 }

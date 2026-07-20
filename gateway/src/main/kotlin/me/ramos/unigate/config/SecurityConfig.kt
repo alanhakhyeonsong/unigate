@@ -20,11 +20,11 @@ import org.springframework.security.web.server.SecurityWebFilterChain
 @Configuration
 @EnableWebFluxSecurity
 class SecurityConfig {
-    @Bean
-    fun securityWebFilterChain(http: ServerHttpSecurity): SecurityWebFilterChain =
-        http
-            // TODO(Phase 1 - OAuth2 로그인 단계): 세션 쿠키 기반이므로 CSRF 정책을 다시 세운다.
-            .csrf { it.disable() }
-            .authorizeExchange { it.anyExchange().permitAll() }
-            .build()
+  @Bean
+  fun securityWebFilterChain(http: ServerHttpSecurity): SecurityWebFilterChain =
+    http
+      // TODO(Phase 1 - OAuth2 로그인 단계): 세션 쿠키 기반이므로 CSRF 정책을 다시 세운다.
+      .csrf { it.disable() }
+      .authorizeExchange { it.anyExchange().permitAll() }
+      .build()
 }
