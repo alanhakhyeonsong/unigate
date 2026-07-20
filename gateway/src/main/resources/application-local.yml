@@ -45,3 +45,9 @@ spring:
 logging:
   level:
     me.ramos.unigate: DEBUG
+    # 4xx 를 보기 위해 켠다.
+    # AbstractErrorWebExceptionHandler 는 5xx 만 ERROR 로 남기고 4xx 는 DEBUG 로 남긴다.
+    # 게이트웨이에서 404 는 대개 "라우트 Predicate 에 안 걸렸다"는 신호이므로,
+    # 기본 레벨(INFO)로 두면 라우팅 오류가 무음으로 묻힌다.
+    # (docs/learning/01-scg-route-and-filter-chain.md §5)
+    org.springframework.boot.autoconfigure.web.reactive.error: DEBUG

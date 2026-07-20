@@ -18,7 +18,7 @@ description: 테스트 계층(L1~L4) 표준과 프레임워크 선택(단위=Kot
 
 - **L1(단위·UseCase)은 반드시 Kotest BehaviorSpec** — 규칙 1을 따른다.
 - **L2/L3/L4 슬라이스·통합·E2E는 JUnit5** — 규칙 2를 따른다. (`@DataJpaTest`/`@WebMvcTest`/`@SpringBootTest`가 SpringExtension 을 자동 등록하므로 Kotest 통합은 쓰지 않는다. 코드베이스에 Kotest+Spring 통합 기반이 없다.)
-- 이 4계층은 현재 **도입·확산 중**(portalManagement·kubeManagement 표준 정립 완료). 신규 통합/E2E 테스트는 이 패턴을 따르되, 공통 베이스 클래스 배치(모듈별 vs testFixtures)는 확산 시 재검토 여지가 있다.
+- 이 4계층은 unigate 에서 **아직 L1(단위)만 실제로 쓰이고 있다.** 신규 통합/E2E 테스트는 이 패턴을 따르되, 공통 베이스 클래스 배치(모듈별 vs testFixtures)는 실제로 필요해진 시점에 정한다.
 - 상세 전략·근거: [`docs/todo/testing/integration-test-strategy.md`](../../../docs/todo/testing/integration-test-strategy.md)
 
 ## 규칙 1: 단위 테스트(L1)는 항상 BehaviorSpec 사용
@@ -69,7 +69,7 @@ class CreateAlertUseCaseTest : BehaviorSpec() {
 
 L2/L3/L4 는 **JUnit5** (`@Test`) 로 작성하고, 계층별 공통 베이스를 상속한다. (Kotest `SpringExtension` 을 쓰지 않는다.)
 
-패키지: `com.nhn.inje.ccp.integration` (베이스 클래스). 실 DB 배선은 `TestcontainersTestBase` 의 싱글톤 PostgreSQL 컨테이너(`withReuse(true)`) + `@DynamicPropertySource`(`spring.datasource.*` 주입)로 처리하고, `application-test.yml` 은 Flyway·JPA·더미 프로퍼티만 둔다(datasource URL/드라이버는 두지 않음). 스키마는 Flyway 소유. (`jdbc:tc:` URL 방식은 `withReuse` 를 못 걸어 실행 간 재사용이 안 되므로 채택하지 않는다.)
+패키지: `{basePackage}.integration` (베이스 클래스). 실 DB 배선은 `TestcontainersTestBase` 의 싱글톤 PostgreSQL 컨테이너(`withReuse(true)`) + `@DynamicPropertySource`(`spring.datasource.*` 주입)로 처리하고, `application-test.yml` 은 Flyway·JPA·더미 프로퍼티만 둔다(datasource URL/드라이버는 두지 않음). 스키마는 Flyway 소유. (`jdbc:tc:` URL 방식은 `withReuse` 를 못 걸어 실행 간 재사용이 안 되므로 채택하지 않는다.)
 
 ### L2 — 영속성 슬라이스 (`@DataJpaTest`, Testcontainers, 로컬 전용)
 
@@ -90,7 +90,7 @@ class OrganizationJpaRepositoryImplTest(
 @WebMvcTest(
     controllers = [ClusterV1Controller::class],
     // common-web 의 config/converter(CustomJwtConverter 등)가 슬라이스 자동스캔되므로 REGEX 로 배제
-    excludeFilters = [ComponentScan.Filter(type = FilterType.REGEX, pattern = ["com\\.nhn\\.inje\\.ccp\\.(config|converter)\\..*"])],
+    excludeFilters = [ComponentScan.Filter(type = FilterType.REGEX, pattern = ["{basePackage}\\.(config|converter)\\..*"])],
 )
 class ClusterV1ControllerWebTest {
     @Autowired lateinit var mockMvc: MockMvc
@@ -120,8 +120,8 @@ class OrganizationE2ETest : AbstractE2ETest() {
 
 ```bash
 # Docker Desktop 실행 필수. api.version 은 각 환경의 최소 지원 API 를 동적 주입한다(아래 함정 참조).
-./gradlew :portalManagement:integrationTest -Dapi.version=$(docker version --format '{{.Server.MinAPIVersion}}')
-./gradlew :portalManagement:integrationTest --tests "com.nhn.inje.ccp.adapter.organization.restIn.OrganizationE2ETest" -Dapi.version=$(docker version --format '{{.Server.MinAPIVersion}}')
+./gradlew :gateway:integrationTest -Dapi.version=$(docker version --format '{{.Server.MinAPIVersion}}')
+./gradlew :gateway:integrationTest --tests "{basePackage}.adapter.gatewayIn.SomeE2ETest" -Dapi.version=$(docker version --format '{{.Server.MinAPIVersion}}')
 ```
 
 > **[재발 함정] `-Dapi.version` 은 고정값이 아니라 설치된 Docker 의 최소 지원 API 를 넣는다**: docker-java 기본(1.32)이 최신 Docker 의 최소 지원 API 와 협상 실패 → `Could not find a valid Docker environment`. `docker version --format '{{.Server.MinAPIVersion}}'` 로 각 환경의 최소 API 를 확인해 `-Dapi.version=$(docker version --format '{{.Server.MinAPIVersion}}')` 로 주입한다(`DOCKER_API_VERSION` env 는 gradle 이 시스템 프로퍼티로 변환할 때만 유효). **고정값(예: `1.43`)은 Docker 가 그보다 높은 최소 API(예: `1.44`, Docker 29.x)를 요구하는 환경에서 오히려 실패**하므로 쓰지 않는다.

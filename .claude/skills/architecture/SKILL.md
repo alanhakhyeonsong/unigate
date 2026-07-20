@@ -104,8 +104,12 @@ import {basePackage}.application.alert.port.inbound.CreateAlertInPort  // 금지
 - JPA 어노테이션 (`@Id`, `@Column`, `@Table` 등)
 - 외부 라이브러리 import (Jackson, etc.)
 - application/adapter 패키지 import
-- Spring `org.springframework.http.HttpStatus` — HTTP 상태값이 필요하면 `com.nhn.inje.ccp.constant.HttpStatusCode` 상수 사용
-- HTTP/응답 계약 타입 상속·의존: `com.nhn.inje.ccp.exception.BaseRuntimeException` / `com.nhn.inje.ccp.dto.ResponseTypeCodeInterface` / `com.nhn.inje.ccp.constant.HttpStatusCode` — 도메인 예외는 순수 `DomainException`을 사용한다 (ArchUnit으로 빌드 단계 강제)
+- Spring `org.springframework.http.HttpStatus` 등 **HTTP 프로토콜 타입** — 상태코드는 adapter 가 정한다
+- HTTP/응답 계약 타입 상속·의존 — 도메인 예외는 순수 `RuntimeException` 파생으로 두고,
+  그것을 어떤 상태코드로 응답할지는 adapter 경계에서 매핑한다
+
+> `HttpStatus` 는 adapter 계층에서는 **권장 타입**이다 (예: `DownstreamErrorMappingFilter`).
+> 금지 대상은 "HttpStatus 사용" 자체가 아니라 **domain 이 HTTP 를 아는 것**이다.
 
 ## ArchUnit으로 자동 강제되는 규칙 (BC 모듈)
 
