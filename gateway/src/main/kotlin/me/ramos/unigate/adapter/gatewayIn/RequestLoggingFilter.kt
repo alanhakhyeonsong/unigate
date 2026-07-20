@@ -44,21 +44,26 @@ class RequestLoggingFilter :
       Thread.currentThread().name,
     )
 
+    // `.then()` 이 아니라 `.doFinally()` 를 쓴다.
+    // `.then()` 은 upstream 의 onComplete 에서만 실행되므로, 다운스트림 연결 실패·
+    // 타임아웃(onError)이나 클라이언트 이탈(cancel) 시 post 로그가 통째로 사라진다.
+    // 관찰용 필터가 정작 조사가 필요한 순간에만 침묵하게 된다.
+    // doFinally 는 complete/error/cancel 세 종결 시그널 모두에서 실행된다.
     return chain
       .filter(exchange)
-      .then(
-        Mono.fromRunnable<Void> {
-          val elapsedMs = (System.nanoTime() - startedAt) / 1_000_000
-          log.info(
-            "[post] {} {} status={} elapsedMs={} thread={}",
-            request.method,
-            request.uri.path,
-            exchange.response.statusCode,
-            elapsedMs,
-            Thread.currentThread().name,
-          )
-        },
-      )
+      .doFinally { signal ->
+        val elapsedMs = (System.nanoTime() - startedAt) / 1_000_000
+        log.info(
+          "[post] {} {} status={} signal={} elapsedMs={} thread={}",
+          request.method,
+          request.uri.path,
+          // 응답이 커밋되지 않았으면 null 이다. 그 자체가 정보다.
+          exchange.response.statusCode,
+          signal,
+          elapsedMs,
+          Thread.currentThread().name,
+        )
+      }
   }
 
   /**

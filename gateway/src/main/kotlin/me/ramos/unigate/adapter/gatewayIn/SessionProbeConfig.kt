@@ -1,5 +1,6 @@
 package me.ramos.unigate.adapter.gatewayIn
 
+import org.slf4j.LoggerFactory
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.Profile
@@ -24,20 +25,31 @@ import org.springframework.web.reactive.function.server.coRouter
 @Configuration
 @Profile("local")
 class SessionProbeConfig {
+  private val log = LoggerFactory.getLogger(javaClass)
+
   @Bean
   fun sessionProbeRoutes(): RouterFunction<ServerResponse> =
     coRouter {
       GET("/debug/session") { request ->
         val session = request.awaitSession()
 
-        // 속성을 넣는 순간 세션이 "시작"되고 저장소에 기록된다.
-        // 아무것도 넣지 않으면 세션 ID 는 생기지만 저장되지 않는다.
-        val visitCount = (session.attributes["visitCount"] as? Int ?: 0) + 1
+        // 속성을 넣으면 세션이 "started" 상태가 되고, 실제 저장은 **응답 커밋 시점**에
+        // 일어난다(WebSession.save 가 응답 커밋 훅에 등록된다). put 즉시 쓰기가 아니다.
+        // 아무 속성도 넣지 않으면 세션 ID 는 생기지만 저장소에 기록되지 않는다.
+        //
+        // 직렬화기가 바뀌면 Int 가 아닌 타입으로 돌아올 수 있다. 그때 조용히 0 으로
+        // 떨어지면 "세션 저장 실패"가 "정상 첫 방문"으로 위장되므로 실제 타입을 남긴다.
+        val previous = session.attributes["visitCount"]
+        if (previous != null && previous !is Int) {
+          log.warn("visitCount 직렬화 왕복 타입 불일치: {}", previous::class.java.name)
+        }
+        val visitCount = (previous as? Number)?.toInt()?.plus(1) ?: 1
         session.attributes["visitCount"] = visitCount
 
         ServerResponse.ok().bodyValueAndAwait(
           mapOf(
-            "sessionId" to session.id,
+            // 세션 ID 원문을 그대로 노출하지 않는다. 재시작 전후 동일성 비교에는 앞 8자면 충분하다.
+            "sessionId" to session.id.take(8),
             "visitCount" to visitCount,
             "createdAt" to session.creationTime.toString(),
             "maxIdleTime" to session.maxIdleTime.toString(),

@@ -71,6 +71,11 @@ deploy/**/*.secret.yml
 
 ### 기타 secret 파일 ###
 **/*.secret.env
+# docs/KEYCLOAK_REALM_SETUP.md 가 client secret 보관처로 .env 를 안내하므로 함께 차단한다.
+# public 리모트라 한 번 커밋되면 되돌릴 수 없다.
+.env
+.env.*
+!.env.example
 secrets/
 application-*-secret.yml
 

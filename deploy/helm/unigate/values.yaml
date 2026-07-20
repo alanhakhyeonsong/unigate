@@ -95,7 +95,10 @@ otelAgent:
   enabled: false
 
 env:
-  SPRING_PROFILES_ACTIVE: local
+  # 기본값 없음(fail-closed). 환경별 오버레이(values-<env>.yaml)에서 반드시 지정한다.
+  # local 을 기본값으로 두면 오버레이를 빠뜨린 배포가 조용히 성공하면서
+  # 개발용 자격증명과 디버그 엔드포인트가 그대로 노출된다.
+  SPRING_PROFILES_ACTIVE: ""
 
 tmpVolume:
   enabled: true

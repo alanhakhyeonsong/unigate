@@ -105,6 +105,12 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/nope
 | `stripPrefix` 누락 | 다운스트림 404 | `/api/echo` 가 그대로 전달됨 | `stripPrefix(1)` 또는 `rewritePath` |
 | `.uri()` 에 경로 포함 | 경로가 반영되지 않음 | SCG 는 URI 의 path 를 쓰지 않는다 | 필터로 경로 조작 |
 | Host 헤더 변경 | 다운스트림이 원래 호스트를 모름 | 기본적으로 다운스트림 주소로 재작성 | 필요 시 `preserveHostHeader` 또는 `X-Forwarded-*` |
+| **`.then()` 으로 post 처리** | 다운스트림 연결 실패·타임아웃·클라이언트 이탈 시 **post 로그가 통째로 사라짐** | `Mono.then()` 은 `onComplete` 에서만 실행된다. `onError`/`cancel` 에서는 구독조차 되지 않는다 | `.doFinally { signal -> }` — 세 종결 시그널 모두에서 실행 |
+
+> **`.then()` 함정이 특히 나쁜 이유**: 정상 요청에서는 완벽하게 동작하므로 개발 중에 드러나지 않는다.
+> 그러다 정작 **조사가 필요한 순간(연결 실패·타임아웃)에만 침묵한다.** 관찰 도구가 관찰이
+> 필요할 때 사라지는 셈이다. `doFinally` 의 `signal` 값(`onComplete`/`onError`/`cancel`)을 함께
+> 찍으면 "왜 status 가 null 인가"까지 로그만으로 판단할 수 있다.
 
 > **첫 번째 함정이 이 단계에서 실제로 발생했다.** actuator 가 302 를 반환해 헬스체크가 불가능했다.
 > 증상만 보면 게이트웨이 라우팅 문제처럼 보이지만 원인은 Security 자동 구성이었다.
