@@ -73,3 +73,9 @@ deploy/**/*.secret.yml
 **/*.secret.env
 secrets/
 application-*-secret.yml
+
+### 샘플 애플리케이션 (로컬 검증 전용 · 커밋 제외) ###
+# samples/downstream-demo : 샘플 다운스트림 BE (Resource Server)
+# samples/frontend-demo   : 샘플 FE (React + TypeScript)
+# 게이트웨이 동작 검증용이며 unigate 산출물이 아니다. Gradle 도 include 하지 않는다.
+samples/

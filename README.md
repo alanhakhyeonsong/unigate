@@ -32,8 +32,10 @@ unigate/
 ├── deploy/               # Helm 차트(alpha) + 로컬 직접 배포 스크립트
 │   ├── helm/unigate/
 │   └── deploy-alpha.sh
-└── docs/                 # 설계·계획 문서
+└── docs/                 # 설계 문서 + docs/learning (학습 기록)
 ```
+
+> `samples/`(샘플 다운스트림 BE·FE), `docs/plans/`, `*.secret.env` 는 **커밋 대상이 아니다**.
 
 ## 로컬 개발
 
@@ -48,8 +50,9 @@ docker compose up -d
 ./gradlew :gateway:bootRun
 ```
 
-Keycloak 은 외부 제공 엔드포인트를 사용한다. `KEYCLOAK_ISSUER_URI` 등 환경변수로 주입한다
-(전용 realm `unigate` — 인스턴스 공유·realm 격리).
+Keycloak 은 외부 제공 엔드포인트를 사용한다. `KEYCLOAK_ISSUER_URI` 등 환경변수로 주입한다.
+**인스턴스는 공유하고 realm 은 환경별로 격리**한다 — local `test` / alpha `unigate`.
+realm 구성 절차와 자동화 스크립트는 [`docs/KEYCLOAK_REALM_SETUP.md`](docs/KEYCLOAK_REALM_SETUP.md) 참고.
 
 ## Alpha 배포 (로컬 → 공유 k8s 직접 배포)
 
