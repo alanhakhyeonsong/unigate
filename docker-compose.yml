@@ -8,8 +8,9 @@ services:
       POSTGRES_USER: testuser
       POSTGRES_PASSWORD: testpass
       TZ: Asia/Seoul
+    # 호스트 3000 -> 컨테이너 5432. 컨테이너 내부 포트는 표준 유지(healthcheck·클라이언트 기본값).
     ports:
-      - "5432:5432"
+      - "3000:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

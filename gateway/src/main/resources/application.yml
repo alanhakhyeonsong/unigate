@@ -11,6 +11,12 @@ server:
   shutdown: graceful
   port: 8080
 
+unigate:
+  downstream:
+    # Phase 1 검증용 샘플 다운스트림(samples/downstream-demo, 커밋 제외).
+    # 환경별로 실제 백엔드 주소로 교체된다.
+    demo-uri: ${DOWNSTREAM_DEMO_URI:http://localhost:8081}
+
 # graceful shutdown drain 시간
 lifecycle:
   timeout-per-shutdown-phase: 20s

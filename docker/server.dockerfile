@@ -5,7 +5,8 @@ ARG MODULE_NAME
 ENV WORKDIR=/app
 ENV TMPDIR=/tmp
 ENV TZ=Asia/Seoul
-ENV SPRING_PROFILES_ACTIVE=local
+# 프로필 기본값을 두지 않는다(fail-closed). entrypoint 가 미지정 시 기동을 실패시킨다.
+# local 프로필에는 개발용 자격증명과 디버그 엔드포인트가 포함되어 있다.
 
 WORKDIR ${WORKDIR}
 

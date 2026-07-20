@@ -193,7 +193,7 @@ services:
     image: postgres:16
     container_name: unigate-postgres
     environment: { POSTGRES_DB: unigate, POSTGRES_USER: testuser, POSTGRES_PASSWORD: testpass, TZ: Asia/Seoul }
-    ports: ["5432:5432"]
+    ports: ["3000:5432"]         # 호스트 3000 -> 컨테이너 5432
     volumes: ["postgres_data:/var/lib/postgresql/data"]
 
   valkey:

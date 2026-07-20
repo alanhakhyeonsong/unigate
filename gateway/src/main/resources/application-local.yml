@@ -11,15 +11,16 @@ spring:
     timeout: 30m
 
   # --- R2DBC (런타임, reactive) ---
+  # 로컬 postgres 는 호스트 3000 포트로 노출된다 (docker-compose.yml)
   r2dbc:
-    url: ${SPRING_R2DBC_URL:r2dbc:postgresql://127.0.0.1:5432/unigate}
+    url: ${SPRING_R2DBC_URL:r2dbc:postgresql://127.0.0.1:3000/unigate}
     username: ${SPRING_R2DBC_USERNAME:testuser}
     password: ${SPRING_R2DBC_PASSWORD:testpass}
 
   # --- Flyway (마이그레이션, JDBC) ---
   flyway:
     enabled: true
-    url: ${SPRING_FLYWAY_URL:jdbc:postgresql://127.0.0.1:5432/unigate}
+    url: ${SPRING_FLYWAY_URL:jdbc:postgresql://127.0.0.1:3000/unigate}
     user: ${SPRING_FLYWAY_USER:testuser}
     password: ${SPRING_FLYWAY_PASSWORD:testpass}
     locations: classpath:db/migration
