@@ -165,8 +165,13 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/nope
 2026-07-20T20:52:26.962+09:00 DEBUG 9818 --- [unigate] [     parallel-3] a.w.r.e.AbstractErrorWebExceptionHandler : [6725852c-1] Resolved [NoResourceFoundException: 404 NOT_FOUND "No static resource nope."] for HTTP GET /nope
 ```
 
+관찰:
+
 확인 3 — 다운스트림을 **끄고** 같은 요청을 보내면?
 관찰 포인트: 어떤 상태코드가 나오는가? 이 응답은 누가 만든 것인가?
+
+> ⚠️ **아래는 `DownstreamErrorMappingFilter` 도입 _전_ 의 관찰이다.** 지금 같은 요청을 보내면
+> 502 가 나온다. 이 기록은 **왜 고쳐야 했는지의 근거**로 남긴다. 수정 후 동작은 확인 4 참고.
 
 ```
 # 출력 붙여넣기
@@ -211,6 +216,62 @@ Caused by: java.net.ConnectException: Connection refused
 2026-07-20T20:44:02.534+09:00  INFO 2573 --- [unigate] [tor-http-nio-10] m.r.u.a.gatewayIn.RequestLoggingFilter   : [post] GET /api/echo status=500 INTERNAL_SERVER_ERROR signal=onError elapsedMs=10 thread=reactor-http-nio-10
 
 ```
+
+관찰:
+
+확인 4 — `DownstreamErrorMappingFilter` 도입 **후**, 같은 조건으로 다시
+```bash
+# 다운스트림(:8081) 을 끈 상태에서
+curl -s -o /dev/null -w '%{http_code}\n' 'localhost:8080/api/echo'
+curl -s 'localhost:8080/api/echo'                                   # 응답 본문
+curl -s -o /dev/null -w '%{http_code}\n' 'localhost:8080/nope'      # 회귀 확인
+```
+관찰 포인트 — 확인 3 과 **무엇이 달라졌고 무엇이 그대로인가**:
+
+1. 상태코드가 `500` → `502` 로 바뀌었는가? 응답 본문의 `error` 필드는?
+2. **원인이 기본 레벨(INFO)에서 보이는가?** `ResponseStatusException` 은 Spring 이
+   "의도된 응답"으로 보고 `DEBUG` 로 낮춘다 — 그래서 필터가 직접 `WARN` 을 남긴다.
+   그 `WARN` 에 **스택트레이스까지** 붙어 있는가?
+3. `[post]` 의 `status=` 는 변환된 값을 보는가, 원래 값을 보는가?
+   (`RequestLoggingFilter` 가 `DownstreamErrorMappingFilter` 보다 **바깥**이라는 것의 의미)
+4. `/nope` 은 여전히 `404` 인가? — 예외 변환 방식을 고른 이유(기존 경로를 안 건드린다)가
+   지켜졌는지 확인하는 항목이다.
+
+```
+# 출력 붙여넣기
+## curl 결과
+➜  ~ curl -s -o /dev/null -w '%{http_code}\n' 'localhost:8080/api/echo'
+  curl -s 'localhost:8080/api/echo'                                   # 응답 본문
+  curl -s -o /dev/null -w '%{http_code}\n' 'localhost:8080/nope'      # 회귀 확인
+502
+{"timestamp":"2026-07-20T12:30:28.191+00:00","path":"/api/echo","status":502,"error":"Bad Gateway","requestId":"56a0ef3a-37"}404
+
+## Unigate 로그 (1번째 요청)
+2026-07-20T21:30:28.174+09:00  INFO 29336 --- [unigate] [     parallel-8] m.r.u.a.gatewayIn.RequestLoggingFilter   : [pre ] GET /api/echo thread=parallel-8
+2026-07-20T21:30:28.176+09:00  WARN 29336 --- [unigate] [tor-http-nio-11] m.r.u.a.g.DownstreamErrorMappingFilter   : 다운스트림 통신 실패 status=502 cause=io.netty.channel.AbstractChannel$AnnotatedConnectException: Connection refused: localhost/127.0.0.1:8081
+
+io.netty.channel.AbstractChannel$AnnotatedConnectException: Connection refused: localhost/127.0.0.1:8081
+Caused by: java.net.ConnectException: Connection refused
+    at java.base/sun.nio.ch.Net.pollConnect(Native Method) ~[na:na]
+    at io.netty.channel.socket.nio.NioSocketChannel.doFinishConnect(NioSocketChannel.java:336) ~[netty-transport-4.1.123.Final.jar:4.1.123.Final]
+    at io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:562) ~[netty-transport-4.1.123.Final.jar:4.1.123.Final]
+    at java.base/java.lang.Thread.run(Thread.java:1583) ~[na:na]
+    ... (중략)
+
+2026-07-20T21:30:28.177+09:00 DEBUG 29336 --- [unigate] [tor-http-nio-11] a.w.r.e.AbstractErrorWebExceptionHandler : [cc10b759-36] Resolved [ResponseStatusException: 502 BAD_GATEWAY "다운스트림에 연결할 수 없습니다."] for HTTP GET /api/echo
+2026-07-20T21:30:28.178+09:00  INFO 29336 --- [unigate] [tor-http-nio-11] m.r.u.a.gatewayIn.RequestLoggingFilter   : [post] GET /api/echo status=502 BAD_GATEWAY signal=onError elapsedMs=4 thread=reactor-http-nio-11
+
+## Unigate 로그 (2번째 요청 — 본문 확인용, 동일 패턴)
+2026-07-20T21:30:28.189+09:00  INFO 29336 --- [unigate] [     parallel-9] m.r.u.a.gatewayIn.RequestLoggingFilter   : [pre ] GET /api/echo thread=parallel-9
+2026-07-20T21:30:28.190+09:00  WARN 29336 --- [unigate] [tor-http-nio-13] m.r.u.a.g.DownstreamErrorMappingFilter   : 다운스트림 통신 실패 status=502 cause=io.netty.channel.AbstractChannel$AnnotatedConnectException: Connection refused: localhost/127.0.0.1:8081
+2026-07-20T21:30:28.191+09:00 DEBUG 29336 --- [unigate] [tor-http-nio-13] a.w.r.e.AbstractErrorWebExceptionHandler : [56a0ef3a-37] Resolved [ResponseStatusException: 502 BAD_GATEWAY "다운스트림에 연결할 수 없습니다."] for HTTP GET /api/echo
+2026-07-20T21:30:28.192+09:00  INFO 29336 --- [unigate] [tor-http-nio-13] m.r.u.a.gatewayIn.RequestLoggingFilter   : [post] GET /api/echo status=502 BAD_GATEWAY signal=onError elapsedMs=2 thread=reactor-http-nio-13
+
+## /nope — 라우트 미매칭 (회귀 없음)
+2026-07-20T21:30:28.203+09:00 DEBUG 29336 --- [unigate] [    parallel-10] a.w.r.e.AbstractErrorWebExceptionHandler : [57182611-38] Resolved [NoResourceFoundException: 404 NOT_FOUND "No static resource nope."] for HTTP GET /nope
+```
+
+관찰:
 
 ## 5. 함정 / 실패 모드
 
