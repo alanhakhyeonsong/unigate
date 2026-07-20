@@ -3,7 +3,7 @@
 > Spring Cloud Gateway + Kotlin(Coroutine) + Keycloak(OIDC) 기반 표준 인증 게이트웨이 (토이 프로젝트)
 > 본 문서는 **Phase 0: 프로젝트 스캐폴딩** 범위에 집중한다. 실제 인증 로직 구현은 후속 Phase.
 >
-> **확정 사항** — base package: `me.ramos.unigate` · 영속성: **R2DBC**(감사로그/클라이언트 메타) + PostgreSQL · Alpha 배포: **로컬 → 공유 k8s 직접 배포**(CI/CD 없음), Valkey/PostgreSQL 공유 · Keycloak: **인스턴스 공유 · realm 격리(전용 `unigate` realm)**.
+> **확정 사항** — base package: `me.ramos.unigate` · 영속성: **R2DBC**(감사로그/클라이언트 메타) + PostgreSQL · Alpha 배포: **로컬 → 공유 k8s 직접 배포**(CI/CD 없음), Valkey/PostgreSQL 공유 · Keycloak: **인스턴스 공유 · realm 격리(local=`test` / alpha=`unigate`)** — 상세는 [`KEYCLOAK_REALM_SETUP.md`](KEYCLOAK_REALM_SETUP.md).
 
 ---
 
@@ -382,7 +382,7 @@ secrets:
     KEYCLOAK_OAUTH_CLIENT_SECRET: "<secret>"
 ```
 
-> **Keycloak realm 격리**: Keycloak **인스턴스는 공유**하되 **realm은 unigate 전용으로 분리**한다. JWKS/issuer/client 모두 `realms/unigate` 기준. Keycloak 관리자에게 **전용 realm `unigate` + OAuth client `unigate-client` 사전 생성**을 요청한다.
+> **Keycloak realm 격리**: Keycloak **인스턴스는 공유**하되 **realm은 환경별로 분리**한다 — **local=`test`, alpha=`unigate`**. 로컬 실험이 alpha의 사용자·정책·client를 오염시키지 않게 하기 위함이며, issuer는 환경변수 주입이라 애플리케이션 코드 변경은 없다. realm/client 구성 절차와 자동화 스크립트는 [`KEYCLOAK_REALM_SETUP.md`](KEYCLOAK_REALM_SETUP.md) 참조.
 
 > **공유 DB 주의**: 공유 PostgreSQL 인스턴스에 unigate 전용 **database `unigate`를 사전 생성**해야 한다 (Flyway는 스키마 안의 테이블만 관리, DB 자체는 생성 못 함).
 
@@ -409,7 +409,7 @@ helm upgrade --install unigate deploy/helm/unigate \
 ### 8.5 배포 사전 준비 체크리스트 (Phase 1)
 
 1. [ ] 공유 PostgreSQL에 `unigate` DB 생성
-2. [ ] Keycloak 전용 realm `unigate` + OAuth client `unigate-client` 생성
+2. [x] Keycloak realm 구성 — local `test` 완료 / alpha `unigate` 는 배포 시점에 `scripts/keycloak/setup-realm.sh --env alpha` 로 생성
 3. [ ] 배포 네임스페이스 / ingress host / container registry 경로 확정
 4. [ ] `values-alpha.secret.yaml` 작성 (커밋 금지)
 5. [ ] `helm template` 렌더 검증 → 실제 배포 스모크
@@ -424,7 +424,7 @@ helm upgrade --install unigate deploy/helm/unigate \
 | 웹 스택 | Reactive(WebFlux) | Servlet + SCG-MVC | SCG 정식 스택은 WebFlux. Coroutine/R2DBC 요구와 정합 |
 | 세션 | Spring Session Redis Reactive | 완전 stateless(JWT만) | BFF + Token Relay 설계 요구. stateless 트레이드오프는 향후 논의 |
 | Keycloak 로컬 | 외부 엔드포인트 주입 | compose에 Keycloak 포함 | 엔드포인트/realm 외부 제공 → Phase 0은 외부 주입 |
-| Keycloak realm | 인스턴스 공유 · realm 격리(`unigate`) | 공유 realm 재사용 | 격리로 인증 정책·client·유저 독립 |
+| Keycloak realm | 인스턴스 공유 · 환경별 realm 격리(local `test` / alpha `unigate`) | 단일 realm 공용 | 로컬 실험이 alpha 사용자·정책을 오염시키지 않음. issuer 는 환경변수라 코드 변경 없음 |
 | Alpha 배포 | 로컬 → 공유 k8s 직접(helm) | GitHub Action CI/CD | 토이 범위. 필요 시 `deploy-alpha.sh` → Action으로 승격 |
 | 게이트웨이 스타터 | `...gateway-server-webflux` | 구 `spring-cloud-starter-gateway` | 2025.0.0 리네이밍 반영 |
 
@@ -432,7 +432,7 @@ helm upgrade --install unigate deploy/helm/unigate \
 
 ## 10. 남은 확인 사항
 
-1. **Keycloak 전용 realm(`unigate`) 정보**: issuer URI / OAuth client(`unigate-client`) id·secret.
+1. ~~**Keycloak realm 정보**~~ — 해결. local `test` realm 구성 완료(client·audience mapper·roles·테스트 사용자). alpha `unigate` realm 은 ingress host 확정 후 동일 스크립트로 생성. → [`KEYCLOAK_REALM_SETUP.md`](KEYCLOAK_REALM_SETUP.md)
 2. **공유 자원 좌표**: PostgreSQL 호스트/계정, unigate 전용 DB 생성, 배포 네임스페이스, ingress host, container registry 경로.
 3. **초기 스키마 범위**: 감사로그 테이블만으로 시작할지, 클라이언트 메타(온보딩 YAML 대응) 테이블도 함께 잡을지.
 4. **게이트웨이 context-path**: 루트 서빙(`/actuator/...`) 확정 여부 (probe 경로 결정).

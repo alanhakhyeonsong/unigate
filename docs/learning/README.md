@@ -1,0 +1,50 @@
+# 학습 문서 인덱스
+
+> unigate를 만들며 **처음 접한 기술**을 정리한 개인 학습 기록.
+> 작성 규칙: `.claude/skills/learning-doc/SKILL.md` · 템플릿: [`_TEMPLATE.md`](_TEMPLATE.md)
+
+`NN` 은 **작성 순서**(= 학습 순서)이며 재정렬하지 않는다.
+**인덱스에 없는 문서는 없는 것과 같다** — 문서를 추가하면 아래 표에 한 줄 추가한다.
+
+## 작성된 문서
+
+| # | 주제 | Phase | 상태 | 한 줄 |
+|---|---|---|---|---|
+| — | _아직 없음_ | | | |
+
+상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
+
+---
+
+## 학습 예정 주제
+
+`CLAUDE.md` §1.1 의 "처음 접하는 기술"에서 파생된 후보다. **순서는 고정이 아니고**,
+실제 작업에서 마주친 시점에 번호를 받는다. 다루고 싶은 범위는 직접 지정한다.
+
+### Phase 1 — 핵심 인증 게이트웨이
+
+- [ ] **Spring Cloud Gateway 필터 체인** — 요청이 `@RestController` 가 아니라 필터를 흐른다는 것의 의미
+- [ ] **WebFlux 이벤트 루프** — 요청당 스레드가 없다는 것, 블로킹이 왜 전체를 멈추는가
+- [ ] **Kotlin Coroutine `suspend`** — 스레드가 아니라 연속(continuation)을 중단·재개한다는 것
+- [ ] **Reactor ↔ Coroutine 경계** — `mono { }`, `awaitBody()` 를 언제 어디에 쓰는가
+- [ ] **OAuth2 Authorization Code + BFF** — 토큰을 브라우저에 주지 않는 구조와 그 대가
+- [ ] **Spring Session + Valkey(Reactive)** — 세션이 서버 메모리를 떠나면 생기는 문제들
+
+### Phase 2 — 토큰 검증
+
+- [ ] **JWKS 서명 검증** — introspection 대비 장단점, 키 회전(`kid` 미스) 대응
+- [ ] **JWT 구조** — `iss` / `aud` / `azp` 가 각각 무엇을 보장하는가
+
+### Phase 3~4 — Resilience · 관측성 · 영속성
+
+- [ ] **R2DBC vs JPA** — 지연로딩·더티체킹·영속성 컨텍스트가 없다는 것의 실제 영향
+- [ ] **Reactive 트랜잭션** — `@Transactional` 이 왜 그대로 동작하지 않는가
+- [ ] **Resilience4j (reactive)** — Circuit Breaker · Bulkhead · Timeout 의 상호작용
+
+### 참고 (직접 쓰지는 않지만 이해가 필요한 것)
+
+- [ ] **Virtual Thread vs Reactive** — 같은 문제의 경쟁 해법. unigate 가 VT 를 쓰지 않는 이유 (`CLAUDE.md` §1.3)
+
+### 샘플 앱 구성 시
+
+- [ ] **BFF + SPA 함정** — XHR 리다이렉트, 세션 쿠키 SameSite, CORS credentials (`CLAUDE.md` §6.1)
