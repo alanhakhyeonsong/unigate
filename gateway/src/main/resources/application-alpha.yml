@@ -1,0 +1,42 @@
+# alpha 환경 — 공유 자원(Valkey/PostgreSQL/Keycloak) 접속.
+# 민감값은 Helm secret(envFrom)으로 주입되며 이 파일엔 평문 secret 을 두지 않는다.
+spring:
+  data:
+    redis:
+      sentinel:
+        master: ${VALKEY_SENTINEL_MASTER}
+        nodes: ${VALKEY_SENTINEL_NODES}
+      password: ${VALKEY_PASSWORD}
+  session:
+    store-type: redis
+    timeout: 30m
+
+  r2dbc:
+    url: ${SPRING_R2DBC_URL}
+    username: ${SPRING_R2DBC_USERNAME}
+    password: ${SPRING_R2DBC_PASSWORD}
+
+  flyway:
+    enabled: true
+    url: ${SPRING_FLYWAY_URL}
+    user: ${SPRING_FLYWAY_USER}
+    password: ${SPRING_FLYWAY_PASSWORD}
+    locations: classpath:db/migration
+
+  security:
+    oauth2:
+      client:
+        provider:
+          keycloak:
+            issuer-uri: ${KEYCLOAK_ISSUER_URI}
+        registration:
+          keycloak:
+            provider: keycloak
+            client-id: ${KEYCLOAK_OAUTH_CLIENT_ID}
+            client-secret: ${KEYCLOAK_OAUTH_CLIENT_SECRET}
+            authorization-grant-type: authorization_code
+            scope: openid, profile, email
+
+logging:
+  level:
+    me.ramos.unigate: INFO

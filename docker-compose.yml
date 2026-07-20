@@ -1,0 +1,63 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: unigate-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: unigate
+      POSTGRES_USER: testuser
+      POSTGRES_PASSWORD: testpass
+      TZ: Asia/Seoul
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U testuser -d unigate"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Valkey Master — Sentinel 구조 통일 (운영 alpha 환경과 동일한 접속 경로 사용)
+  # 컨테이너는 6379(데이터) + 26379(센티넬 포트 노출)를 둘 다 보유한다.
+  # valkey-sentinel 서비스가 이 컨테이너의 network namespace 를 공유하여 127.0.0.1:6379 로 master 를 감시한다.
+  valkey:
+    image: valkey/valkey:7.2.8
+    container_name: unigate-valkey
+    restart: unless-stopped
+    command:
+      - valkey-server
+      - --port
+      - "6379"
+      - --protected-mode
+      - "no"
+      - --appendonly
+      - "yes"
+    ports:
+      - "6379:6379"
+      - "26379:26379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Sentinel 은 런타임에 config 를 rewrite 하므로 read-only 마운트를 쓸 수 없다.
+  # 시작 시 /etc/valkey-ro/sentinel.conf 를 /tmp 로 복사한 뒤 해당 파일로 기동한다.
+  valkey-sentinel:
+    image: valkey/valkey:7.2.8
+    container_name: unigate-valkey-sentinel
+    restart: unless-stopped
+    network_mode: "service:valkey"
+    depends_on:
+      valkey:
+        condition: service_healthy
+    volumes:
+      - ./docker/valkey/sentinel.conf:/etc/valkey-ro/sentinel.conf:ro
+    command:
+      - sh
+      - -c
+      - "cp /etc/valkey-ro/sentinel.conf /tmp/sentinel.conf && exec valkey-sentinel /tmp/sentinel.conf"
+
+volumes:
+  postgres_data:

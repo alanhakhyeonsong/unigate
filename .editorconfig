@@ -1,0 +1,21 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+indent_style = space
+indent_size = 2
+max_line_length = 120
+trim_trailing_whitespace = true
+
+[*.{kt,kts}]
+ij_java_delete_unused_module_imports = true
+ij_kotlin_name_count_to_use_star_import = unset
+ij_kotlin_name_count_to_use_star_import_for_members = unset
+ij_kotlin_allow_trailing_comma = true
+ij_kotlin_allow_trailing_comma_on_call_site = true
+ktlint_standard_no-wildcard-imports = disabled
+ktlint_standard_final-newline = disabled
+ktlint_standard_filename = disabled
+ij_kotlin_imports_layout = *, java.**, javax.**, kotlin.**, ^

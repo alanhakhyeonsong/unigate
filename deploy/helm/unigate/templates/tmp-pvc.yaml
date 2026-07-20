@@ -1,0 +1,22 @@
+{{- $tmpVolume := .Values.tmpVolume -}}
+{{- if and $tmpVolume $tmpVolume.enabled $tmpVolume.persistentVolumeClaim $tmpVolume.persistentVolumeClaim.create }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ default (printf "%s-tmp" (include "unigate.fullname" .)) $tmpVolume.persistentVolumeClaim.name }}-pvc
+  namespace: {{ include "unigate.namespace" . }}
+  labels:
+    {{- include "unigate.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- range $mode := default (list "ReadWriteOnce") $tmpVolume.persistentVolumeClaim.accessModes }}
+    - {{ $mode }}
+    {{- end }}
+  {{- with $tmpVolume.persistentVolumeClaim.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+  {{- with $tmpVolume.persistentVolumeClaim.resources }}
+  resources:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

@@ -1,0 +1,24 @@
+{{- $config := .Values.config -}}
+{{- if and $config.enabled (or $config.files $config.properties) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "unigate.fullname" . }}-cm
+  namespace: {{ include "unigate.namespace" . }}
+  labels:
+    {{- include "unigate.labels" . | nindent 4 }}
+data:
+  {{- $files := default (dict) $config.files }}
+  {{- range $name, $content := $files }}
+  {{ $name | quote }}: |
+{{- if kindIs "string" $content }}
+{{ $content | indent 4 }}
+{{- else }}
+{{ toYaml $content | indent 4 }}
+{{- end }}
+  {{- end }}
+  {{- if and $config.properties (not (hasKey $files "application.properties")) }}
+  application.properties: |
+{{ $config.properties | indent 4 }}
+  {{- end }}
+{{- end }}

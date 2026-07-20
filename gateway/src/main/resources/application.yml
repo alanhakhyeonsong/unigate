@@ -1,0 +1,35 @@
+spring:
+  application:
+    name: unigate
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
+  # 게이트웨이는 루트에서 서빙 (context-path 없음)
+  main:
+    web-application-type: reactive
+
+server:
+  shutdown: graceful
+  port: 8080
+
+# graceful shutdown drain 시간
+lifecycle:
+  timeout-per-shutdown-phase: 20s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true       # /actuator/health/readiness, /actuator/health/liveness
+      group:
+        readiness:
+          include: readinessState, redis
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+# Flyway: 스키마 마이그레이션(JDBC, 부팅 시 1회). 런타임 CRUD 는 R2DBC.
+# R2DBC 는 마이그레이션 기능이 없어 Flyway 를 JDBC 로 별도 구동한다.

@@ -1,0 +1,75 @@
+.gradle
+.gradle-local
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/main/**/build/
+!**/src/test/**/build/
+target/
+
+/uploads/
+
+### IntelliJ IDEA ###
+.idea/modules.xml
+.idea/jarRepositories.xml
+.idea/compiler.xml
+.idea/libraries/
+.idea/**
+*.iws
+*.iml
+*.ipr
+out/
+!**/src/main/**/out/
+!**/src/test/**/out/
+
+### Kotlin ###
+.kotlin
+
+### Eclipse ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+bin/
+!**/src/main/**/bin/
+!**/src/test/**/bin/
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+
+### VS Code ###
+.vscode/
+
+### Mac OS ###
+.DS_Store
+
+### OMC / 도구 상태 ###
+.omc/
+**/.omc
+.omx/
+.omx-local/
+.codex/*
+!.codex/skills/
+!.codex/skills/**
+
+.claude/settings.local.json
+.claude/skills/**/.env
+
+### 계획/작업 산출물 ###
+docs/plans
+
+### 배포 secret (필수) — Helm values 평문 secret 커밋 금지 ###
+deploy/**/*.secret.yaml
+deploy/**/*.secret.yml
+!deploy/**/*.secret.yaml.example
+
+### 기타 secret 파일 ###
+**/*.secret.env
+secrets/
+application-*-secret.yml

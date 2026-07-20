@@ -1,0 +1,52 @@
+{{- if .Values.ingress.enabled }}
+{{- /*
+  ingress.mergeable.role 토글:
+    - "minion"  : F5 NIC mergeable 그룹의 minion. host owner(master) 는 별도 차트(ccp-be-ingress)가 보유.
+                  → tls 블록은 master 가 소유하므로 본 차트에서는 미렌더링.
+                  → nginx.org/mergeable-ingress-type=minion annotation 자동 주입.
+    - "master"  : (예비) 본 차트가 host owner. 현재 운영 시나리오에서는 사용하지 않음.
+    - 미설정/"" : 기존 동작 100% 동일 (alpha 회귀 방지).
+*/}}
+{{- $mergeRole := dig "mergeable" "role" "" .Values.ingress }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "unigate.fullname" . }}-ing
+  namespace: {{ include "unigate.namespace" . }}
+  labels:
+    {{- include "unigate.labels" . | nindent 4 }}
+  {{- if or $mergeRole .Values.ingress.annotations }}
+  annotations:
+    {{- if $mergeRole }}
+    nginx.org/mergeable-ingress-type: {{ $mergeRole | quote }}
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "unigate.fullname" $ }}-svc
+                port:
+                  number: {{ $.Values.service.port }}
+          {{- end }}
+    {{- end }}
+  {{- if ne $mergeRole "minion" }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- end }}
+{{- end }}

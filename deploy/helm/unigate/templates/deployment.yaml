@@ -1,0 +1,197 @@
+{{- $configEnabled := and .Values.config .Values.config.enabled }}
+{{- $rawMountPath := default "/config" .Values.config.mountPath }}
+{{- $trimmedMountPath := trimSuffix "/" $rawMountPath }}
+{{- $configMountPath := ternary "/config" $trimmedMountPath (eq $trimmedMountPath "") }}
+{{- $configEnvVar := default "SPRING_CONFIG_ADDITIONAL_LOCATION" .Values.config.envVar }}
+{{- $configEnvValue := printf "%s/" $configMountPath }}
+{{- $global := default (dict) .Values.global -}}
+{{- $globalImage := default (dict) (index $global "image") -}}
+{{- $localImage := default (dict) .Values.image -}}
+{{- $imageRepository := default (default "" (index $localImage "repository")) (index $globalImage "repository") -}}
+{{- $imageTag := default (default .Chart.AppVersion (index $localImage "tag")) (index $globalImage "tag") -}}
+{{- $imagePullPolicy := default (default "IfNotPresent" (index $localImage "pullPolicy")) (index $globalImage "pullPolicy") -}}
+{{- $tmpVolume := .Values.tmpVolume -}}
+{{- $tmpEnabled := and $tmpVolume $tmpVolume.enabled -}}
+{{- $tmpMountPath := default "/tmp" (and $tmpVolume $tmpVolume.mountPath) -}}
+{{- $tmpReadOnly := default false (and $tmpVolume $tmpVolume.readOnly) -}}
+{{- $tmpSubPath := default "" (and $tmpVolume $tmpVolume.subPath) -}}
+{{- $tmpPvc := default (dict) (and $tmpVolume $tmpVolume.persistentVolumeClaim) -}}
+{{- $tmpPvcName := default (printf "%s-tmp" (include "unigate.fullname" .)) (and $tmpPvc $tmpPvc.name) -}}
+{{- $otelAgent := default (dict) .Values.otelAgent -}}
+{{- $otelEnabled := and $otelAgent (default false $otelAgent.enabled) -}}
+{{- $otelImage := default "" $otelAgent.image -}}
+{{- $otelPullPolicy := default "IfNotPresent" $otelAgent.pullPolicy -}}
+{{- $otelMountPath := default "/otel" $otelAgent.mountPath -}}
+{{- $otelJarInImage := default "/opentelemetry-javaagent.jar" $otelAgent.jarPathInImage -}}
+{{- $otelJarFileName := base $otelJarInImage -}}
+{{- $otelResources := default (dict) $otelAgent.resources -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "unigate.fullname" . }}-deploy
+  namespace: {{ include "unigate.namespace" . }}
+  labels:
+    {{- include "unigate.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  {{- with .Values.revisionHistoryLimit }}
+  revisionHistoryLimit: {{ . }}
+  {{- end }}
+  {{- with .Values.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "unigate.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "unigate.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- if .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
+      {{- end }}
+      {{- if .Values.serviceAccount.create }}
+      serviceAccountName: {{ default (include "unigate.fullname" .) .Values.serviceAccount.name }}-sa
+      {{- else if .Values.serviceAccount.name }}
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      {{- end }}
+      {{- with .Values.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ . }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if $otelEnabled }}
+      initContainers:
+        - name: otel-agent-init
+          image: {{ $otelImage | quote }}
+          imagePullPolicy: {{ $otelPullPolicy }}
+          command: ["sh", "-c"]
+          args:
+            - cp {{ $otelJarInImage }} {{ $otelMountPath }}/{{ $otelJarFileName }}
+          volumeMounts:
+            - name: otel-agent
+              mountPath: {{ $otelMountPath }}
+          {{- with $otelResources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 1001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+      {{- end }}
+      containers:
+        - name: {{ include "unigate.name" . }}
+          image: "{{ $imageRepository }}:{{ $imageTag }}"
+          imagePullPolicy: {{ $imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+              protocol: TCP
+          env:
+            - name: JAVA_OPTS
+              value: {{ .Values.javaOpts | quote }}
+            {{- range $key, $value := .Values.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- if $configEnabled }}
+            - name: {{ $configEnvVar }}
+              value: {{ $configEnvValue | quote }}
+            {{- end }}
+          {{- if and .Values.secrets .Values.secrets.enabled }}
+          envFrom:
+            - secretRef:
+                name: {{ include "unigate.fullname" . }}-secret
+          {{- end }}
+          {{- with .Values.lifecycle }}
+          lifecycle:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if or $configEnabled $tmpEnabled $otelEnabled }}
+          volumeMounts:
+            {{- if $configEnabled }}
+            - name: application-config
+              mountPath: {{ $configMountPath }}
+              readOnly: true
+            {{- end }}
+            {{- if $tmpEnabled }}
+            - name: tmp-storage
+              mountPath: {{ $tmpMountPath }}
+              readOnly: {{ $tmpReadOnly }}
+              {{- if $tmpSubPath }}
+              subPath: {{ $tmpSubPath }}
+              {{- end }}
+            {{- end }}
+            {{- if $otelEnabled }}
+            - name: otel-agent
+              mountPath: {{ $otelMountPath }}
+              readOnly: true
+            {{- end }}
+          {{- end }}
+          {{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if or $configEnabled $tmpEnabled $otelEnabled }}
+      volumes:
+        {{- if $configEnabled }}
+        - name: application-config
+          configMap:
+            name: {{ include "unigate.fullname" . }}-cm
+            {{- with .Values.config.defaultMode }}
+            defaultMode: {{ . }}
+            {{- end }}
+        {{- end }}
+        {{- if $tmpEnabled }}
+        - name: tmp-storage
+          persistentVolumeClaim:
+            claimName: {{ $tmpPvcName }}-pvc
+        {{- end }}
+        {{- if $otelEnabled }}
+        - name: otel-agent
+          emptyDir: {}
+        {{- end }}
+      {{- end }}

@@ -1,0 +1,44 @@
+spring:
+  # --- Valkey (로컬 Sentinel: docker-compose) ---
+  data:
+    redis:
+      sentinel:
+        master: ${VALKEY_SENTINEL_MASTER:mymaster}
+        nodes: ${VALKEY_SENTINEL_NODES:127.0.0.1:26379}
+      # password: ${VALKEY_PASSWORD:}   # 로컬은 미설정
+  session:
+    store-type: redis
+    timeout: 30m
+
+  # --- R2DBC (런타임, reactive) ---
+  r2dbc:
+    url: ${SPRING_R2DBC_URL:r2dbc:postgresql://127.0.0.1:5432/unigate}
+    username: ${SPRING_R2DBC_USERNAME:testuser}
+    password: ${SPRING_R2DBC_PASSWORD:testpass}
+
+  # --- Flyway (마이그레이션, JDBC) ---
+  flyway:
+    enabled: true
+    url: ${SPRING_FLYWAY_URL:jdbc:postgresql://127.0.0.1:5432/unigate}
+    user: ${SPRING_FLYWAY_USER:testuser}
+    password: ${SPRING_FLYWAY_PASSWORD:testpass}
+    locations: classpath:db/migration
+
+  # --- Keycloak (인스턴스 공유 · realm 격리) ---
+  security:
+    oauth2:
+      client:
+        provider:
+          keycloak:
+            issuer-uri: ${KEYCLOAK_ISSUER_URI:http://localhost:8080/realms/unigate}
+        registration:
+          keycloak:
+            provider: keycloak
+            client-id: ${KEYCLOAK_OAUTH_CLIENT_ID:unigate-client}
+            client-secret: ${KEYCLOAK_OAUTH_CLIENT_SECRET:changeit}
+            authorization-grant-type: authorization_code
+            scope: openid, profile, email
+
+logging:
+  level:
+    me.ramos.unigate: DEBUG

@@ -1,0 +1,6 @@
+# Whitelist approach: exclude everything, allow only what Docker needs
+*
+
+# Allow only the built jar and entrypoint script
+!*/build/libs/app.jar
+!docker/docker-entrypoint.sh
