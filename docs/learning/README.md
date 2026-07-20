@@ -11,6 +11,7 @@
 | # | 주제 | Phase | 상태 | 한 줄 |
 |---|---|---|---|---|
 | [01](01-scg-route-and-filter-chain.md) | SCG 라우트와 필터 체인 | 1 | 학습중 | 요청이 컨트롤러가 아니라 Predicate + Filter 를 통과해 프록시된다 |
+| [02](02-webflux-event-loop.md) | WebFlux 이벤트 루프 | 1 | 학습중 | 요청당 스레드가 없다. 블로킹은 국소 손해가 아니라 전역 장애가 된다 |
 
 상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
 
@@ -24,7 +25,7 @@
 ### Phase 1 — 핵심 인증 게이트웨이
 
 - [x] **Spring Cloud Gateway 필터 체인** → [01](01-scg-route-and-filter-chain.md)
-- [ ] **WebFlux 이벤트 루프** — 요청당 스레드가 없다는 것, 블로킹이 왜 전체를 멈추는가
+- [x] **WebFlux 이벤트 루프** → [02](02-webflux-event-loop.md)
 - [ ] **Kotlin Coroutine `suspend`** — 스레드가 아니라 연속(continuation)을 중단·재개한다는 것
 - [ ] **Reactor ↔ Coroutine 경계** — `mono { }`, `awaitBody()` 를 언제 어디에 쓰는가
 - [ ] **OAuth2 Authorization Code + BFF** — 토큰을 브라우저에 주지 않는 구조와 그 대가
