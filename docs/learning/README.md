@@ -10,7 +10,7 @@
 
 | # | 주제 | Phase | 상태 | 한 줄 |
 |---|---|---|---|---|
-| [01](01-scg-route-and-filter-chain.md) | SCG 라우트와 필터 체인 | 1 | 학습중 | 요청이 컨트롤러가 아니라 Predicate + Filter 를 통과해 프록시된다 |
+| [01](01-scg-route-and-filter-chain.md) | SCG 라우트와 필터 체인 | 1 | 이해함 | 요청이 컨트롤러가 아니라 Predicate + Filter 를 통과해 프록시된다 |
 | [02](02-webflux-event-loop.md) | WebFlux 이벤트 루프 | 1 | 학습중 | 요청당 스레드가 없다. 블로킹은 국소 손해가 아니라 전역 장애가 된다 |
 | [03](03-spring-session-valkey-reactive.md) | Spring Session + Valkey | 1 | 학습중 | 앱 재시작에도 세션이 살아남는다. 대신 세션 저장소가 인증 가용성이 된다 |
 
