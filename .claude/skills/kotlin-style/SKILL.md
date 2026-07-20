@@ -29,8 +29,12 @@ data class ProjectResponse(
 - driving adapter: `restIn` — 소문자 `restin` 금지
 - 대소문자만 바뀌는 패키지 rename 시 macOS(대소문자 비구분 FS)에서 빌드 캐시가 옛 경로로 잔존할 수 있으므로 **`clean` 재빌드로 검증**
 
-## HTTP 상태 코드 상수
-- HTTP 상태값은 Spring `org.springframework.http.HttpStatus` 대신 **`com.nhn.inje.ccp.constant.HttpStatusCode`** 상수를 사용한다(domain 순수성, ArchUnit 강제). 예: `HttpStatusCode.BAD_REQUEST`
+## HTTP 상태 코드
+- **adapter 계층에서는 Spring `org.springframework.http.HttpStatus` 를 쓴다.** 예: `HttpStatus.BAD_GATEWAY`
+  - unigate 에는 별도 상태코드 상수 모듈이 없다. 표준 타입을 그대로 쓰는 편이 낫다.
+- **domain 계층에는 HTTP 상태값을 두지 않는다.** `HttpStatus` import 자체가 레이어 위반이다.
+  도메인은 "무슨 일이 일어났는가"만 표현하고, 그것을 몇 번 코드로 응답할지는 adapter 가 정한다.
+  - 이 경계가 무너지면 도메인이 HTTP 프로토콜에 묶여 다른 진입점(배치·메시지 소비)에서 재사용할 수 없게 된다.
 
 ## ktlint
 - `./gradlew ktlintFormat`으로 자동 포맷팅. **pre-commit**(format)·**pre-push**(check) git hook이 gradle 빌드 시 자동 설치된다.

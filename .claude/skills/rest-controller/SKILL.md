@@ -92,14 +92,14 @@ interface DepartmentRestMapper {
 `adapter/common/restIn/advice/<Server>DomainExceptionHandler.kt`
 
 - 서버 단위로 단일 핸들러를 둔다. 도메인 예외 패밀리별 `@ExceptionHandler` 메서드를 이 클래스 안에 추가한다.
-- 예시: `portalManagement` 서버 → `PortalManagementDomainExceptionHandler`
+- 예시: `gateway` 모듈 → `GatewayDomainExceptionHandler`
 
 ### 패턴
 
 ```kotlin
 @RestControllerAdvice
 @Order(Ordered.LOWEST_PRECEDENCE - 1)
-class PortalManagementDomainExceptionHandler(
+class GatewayDomainExceptionHandler(
     private val messageSource: MessageSource,
 ) {
     @ExceptionHandler(DashboardDomainException::class)

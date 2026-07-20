@@ -225,6 +225,7 @@ Caused by: java.net.ConnectException: Connection refused
 | **`GlobalFilter` 는 매칭 실패 요청을 못 본다** | 라우트에 없는 경로로 온 요청이 **접근 로그에 흔적조차 없음** | `GlobalFilter` 체인은 라우트 매칭 **성공 후** `FilteringWebHandler` 가 실행한다 (§3) | 전수 접근 로그가 필요하면 `WebFilter` 로 구현 |
 | **4xx 는 기본 로그 레벨에서 보이지 않는다** | 500 은 `ERROR` 로 찍히는데 404 는 한 줄도 안 남음 | `AbstractErrorWebExceptionHandler` 는 5xx 를 `ERROR`, 4xx 를 `DEBUG` 로 남긴다. 기본 레벨(INFO)에서는 4xx 가 통째로 묻힌다 | `logging.level.org.springframework.boot.autoconfigure.web.reactive.error: DEBUG` |
 | **`"No static resource X."` 메시지의 오독** | 정적 리소스 설정 문제로 보임 | 실제로는 **어떤 HandlerMapping 도 맡지 않아** 마지막 후보인 정적 리소스 핸들러까지 흘러간 것 (§3) | 정적 파일이 아니라 **라우트 Predicate** 를 확인한다 |
+| **상태코드를 고치면 원인 로그가 사라진다** | 500→502 매핑 후 다운스트림 장애가 기본 레벨에서 **무음**이 됨 | 처리되지 않은 예외는 `ERROR` + 스택트레이스로 남지만, `ResponseStatusException` 은 **"의도된 응답"** 으로 간주되어 `DEBUG` 로 내려간다 | 변환 시점에 **직접 `WARN` 을 남긴다.** 원인 예외를 함께 넘겨 스택트레이스를 보존한다 |
 
 > **`.then()` 함정이 특히 나쁜 이유**: 정상 요청에서는 완벽하게 동작하므로 개발 중에 드러나지 않는다.
 > 그러다 정작 **조사가 필요한 순간(연결 실패·타임아웃)에만 침묵한다.** 관찰 도구가 관찰이
@@ -249,6 +250,16 @@ Caused by: java.net.ConnectException: Connection refused
 > 로그 레벨만 올려도 404 자체는 보이지만, 그건 **에러 핸들러가 남기는 사후 기록**이지 접근 로그가
 > 아니다. 정상 200 요청과 나란히 놓고 볼 수 있는 전수 접근 로그는 여전히 `WebFilter` 가 필요하다.
 
+> **"고쳤더니 안 보이게 됐다"** — `DownstreamErrorMappingFilter` 를 넣고 나서야 드러난 부작용이다.
+> 500 일 때는 처리되지 않은 예외라서 `ERROR` + 스택트레이스가 남았는데, `ResponseStatusException`
+> 으로 바꾸자 Spring 이 이를 **의도된 응답**으로 보고 `DEBUG` 로 낮췄다. 상태코드는 정확해졌는데
+> 원인은 기본 레벨에서 사라진 것이다.
+>
+> 교훈은 **"예외를 의도된 응답으로 바꾸는 순간 관측 책임도 같이 넘어온다"** 는 것이다.
+> 프레임워크가 대신 남겨주던 로그가 사라지므로, 변환하는 쪽이 직접 남겨야 한다.
+> `DownstreamErrorMappingFilter` 는 변환과 `WARN` 로깅을 **같은 함수 안에서** 하여 둘이 분리되지
+> 않게 했다.
+
 > **첫 번째 함정이 이 단계에서 실제로 발생했다.** actuator 가 302 를 반환해 헬스체크가 불가능했다.
 > 증상만 보면 게이트웨이 라우팅 문제처럼 보이지만 원인은 Security 자동 구성이었다.
 > k8s 환경이었다면 **readiness probe 가 계속 실패해 파드가 기동되지 않았을 것**이다.
@@ -270,11 +281,13 @@ Caused by: java.net.ConnectException: Connection refused
 
 ### 아직 모르는 것
 
-- [ ] **`ConnectException` → 502 매핑을 어디에 넣을 것인가?**
-      후보 A: 커스텀 `ErrorWebExceptionHandler` (전 라우트 일괄, 가볍다)
-      후보 B: `circuitBreaker` 필터 + fallback 라우트 (장애 전파 차단까지 되지만 임계값 설계가 붙는다)
-      → 판단 기준: 지금 필요한 것이 **상태코드 정정**만인가, **차단**까지인가.
-        의존성(`spring-cloud-starter-circuitbreaker-reactor-resilience4j`)은 이미 들어와 있다.
+- [x] **`ConnectException` → 502 매핑을 어디에 넣을 것인가?**
+      → `GlobalFilter` 의 `onErrorMap` 으로 **예외를 변환**한다
+      (`adapter/gatewayIn/DownstreamErrorMappingFilter.kt`).
+      커스텀 `ErrorWebExceptionHandler` 도 후보였으나, 바꾸려는 것이 "어떻게 그릴 것인가"가 아니라
+      **"이 예외가 무슨 뜻인가" 하나뿐**이라 변환이 더 작고 회귀 위험이 낮다. 핸들러를 직접
+      구현하면 404·인증 실패 등 지금 잘 도는 경로까지 떠안는다.
+      응답 본문 형식을 게이트웨이 표준으로 통일해야 할 때 비로소 핸들러가 필요해진다.
 - [ ] **`pre` 는 왜 `parallel-*` 인가?**
       확인 1(200)·확인 3(500) 은 물론, **라우트 매칭조차 못 한 확인 2(404)의 에러 핸들러도
       `parallel-3`** 이었다. 즉 스케줄러 전환은 SCG 필터 체인이 아니라 **그 앞의 `WebFilter` 층**
@@ -286,4 +299,14 @@ Caused by: java.net.ConnectException: Connection refused
 - [ ] **전수 접근 로그를 `WebFilter` 로 만든다면 어디에 둬야 하는가?**
       Security 체인보다 앞인가 뒤인가. 앞이면 인증 실패 요청도 찍히지만, 그 시점엔 아직
       사용자 식별 정보가 없다.
+- [ ] **읽기/응답 타임아웃은 어떤 예외로 오는가?**
+      `DownstreamErrorMappingFilter` 는 지금 **연결 계열(`ConnectException`)만** 매핑한다.
+      다운스트림이 살아 있으면서 **응답만 늦는** 경우는 아직 재현해보지 않았다.
+      → 재현 방법: 샘플 BE 에 의도적으로 지연되는 엔드포인트를 두고,
+        `spring.cloud.gateway.httpclient.response-timeout` 을 짧게 준 뒤 어떤 예외가 오는지 확인한다.
+        (`ReadTimeoutException` 인가 `TimeoutException` 인가 → 504 매핑 추가)
+- [ ] **`circuitBreaker` 를 언제 도입할 것인가?**
+      상태코드 정정(완료)과 **장애 전파 차단**은 다른 문제다. 다운스트림이 계속 죽어 있을 때
+      매 요청이 연결 시도로 40ms 씩 소모하는 것을 언제부터 막아야 하는가.
+      의존성(`spring-cloud-starter-circuitbreaker-reactor-resilience4j`)은 이미 들어와 있다.
 - [ ] 

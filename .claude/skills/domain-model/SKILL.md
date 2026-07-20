@@ -126,7 +126,8 @@ class Alert private constructor(...) {
 
 ### 베이스 클래스
 
-`com.nhn.inje.ccp.domain.exception.DomainException` (system-core 모듈) — Spring/HTTP/JPA 의존 0의 순수 `abstract class : RuntimeException`. 도메인 예외는 반드시 이 클래스를 상속한다.
+`domain/common/exception/DomainException.kt` — Spring/HTTP/JPA 의존 0의 순수 `abstract class : RuntimeException`.
+도메인 예외는 반드시 이 클래스를 상속한다. (unigate 에는 아직 없다. 첫 도메인 예외를 만들 때 함께 만든다.)
 
 ```kotlin
 // domain/{도메인}/exception/XxxDomainException.kt
@@ -233,4 +234,4 @@ data class UnitAccessLevels(
 - [ ] ID 타입이 @JvmInline value class VO로 래핑되어 있는가?
 - [ ] 단일 값 VO는 `@JvmInline value class`를, 복합 값 VO는 `data class`를 사용했는가?
 - [ ] VO가 domain/{도메인}/vo/ 패키지에 있는가?
-- [ ] 도메인 예외가 DomainException(`com.nhn.inje.ccp.domain.exception.DomainException`) 상속·순수(HTTP 계약 미의존)인가?
+- [ ] 도메인 예외가 `DomainException` 상속·순수(HTTP 계약 미의존)인가?

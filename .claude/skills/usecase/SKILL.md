@@ -56,7 +56,7 @@ class CreateNamespaceUseCase(
         val namespace = NamespaceBuilder()
             .withNewMetadata()
                 .withName(command.name)
-                .addToLabels("managed-by", "ccp")
+                .addToLabels("managed-by", "unigate")
             .endMetadata()
             .build()
 
