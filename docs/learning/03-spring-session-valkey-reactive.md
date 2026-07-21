@@ -82,8 +82,24 @@ grep -i set-cookie /tmp/h.txt
 (로컬은 http 라 `Secure` 가 없다 — 운영에서는 어떻게 되어야 하는가?)
 
 ```
-# 출력 붙여넣기
+$ curl -s -c /tmp/c.txt -D /tmp/h.txt localhost:8080/debug/session | jq
+{
+  "sessionId": "763025de",
+  "visitCount": 1,
+  "createdAt": "2026-07-21T00:01:19.575346Z",
+  "maxIdleTime": "PT30M",
+  "thread": "parallel-4"
+}
+
+$ grep -i set-cookie /tmp/h.txt
+set-cookie: SESSION=763025de-467a-4ec6-b468-700b46a0be1b; Path=/; HTTPOnly; SameSite=Lax
 ```
+
+관찰:
+- **쿠키 이름 = `SESSION`** (WebFlux/Spring Session 기본). Servlet 의 `JSESSIONID` 에 대응.
+- **`HttpOnly` O** — JS(`document.cookie`)로 못 읽는다 → XSS 로 세션(=BFF 에서는 토큰) 탈취를 막는다.
+- **`Secure` X** — 로컬 http 라 안 붙었다. 운영은 HTTPS + `Secure` 를 **강제**해야 쿠키 평문 전송을 막는다(§5 함정 표).
+- **`SameSite=Lax`** — top-level GET 네비게이션에는 쿠키가 실린다(OAuth2 로그인 리다이렉트 복귀에 필요). 크로스사이트 POST/XHR 에는 안 실려 CSRF 를 완화한다.
 
 확인 2 — 상태가 이어지는가
 ```bash
@@ -93,8 +109,14 @@ curl -s -b /tmp/c.txt localhost:8080/debug/session | jq -c
 관찰 포인트: `sessionId` 는 유지되는가? `visitCount` 는 증가하는가?
 
 ```
-# 출력 붙여넣기
+$ curl -s -b /tmp/c.txt localhost:8080/debug/session | jq -c
+{"sessionId":"763025de","visitCount":2,"createdAt":"2026-07-21T00:01:19.575Z","maxIdleTime":"PT30M","thread":"lettuce-nioEventLoop-5-2"}
+$ curl -s -b /tmp/c.txt localhost:8080/debug/session | jq -c
+{"sessionId":"763025de","visitCount":3,"createdAt":"2026-07-21T00:01:19.575Z","maxIdleTime":"PT30M","thread":"lettuce-nioEventLoop-5-2"}
 ```
+
+관찰: `sessionId` 유지(`763025de`), `visitCount` 2 → 3 증가. 쿠키로 **같은 세션을 Valkey 에서 복원**한다.
+(스레드가 1차 `parallel-4` 에서 `lettuce-nioEventLoop-*` 로 바뀐 이유는 확인 5 참조.)
 
 확인 3 — 저장소에 실제로 무엇이 들어갔는가
 ```bash
@@ -105,8 +127,19 @@ docker exec unigate-valkey valkey-cli TTL   "$KEY"
 ```
 
 ```
-# 출력 붙여넣기
+KEY=spring:session:sessions:763025de-467a-4ec6-b468-700b46a0be1b
+$ ... TYPE  "$KEY"   ->  hash
+$ ... HKEYS "$KEY"   ->  sessionAttr:visitCount
+                        creationTime
+                        lastAccessedTime
+                        maxInactiveInterval
+$ ... TTL   "$KEY"   ->  1797        # 약 30분, 접근 시 갱신
 ```
+
+관찰:
+- 타입은 **hash**. 애플리케이션 속성은 `sessionAttr:` 접두사가 붙는다(`sessionAttr:visitCount`). 나머지는 프레임워크 메타(생성·최근접근·유휴만료).
+- **TTL 갱신 확인**: 요청 직전 `1773` → 요청 1회 후 `1799`. `timeout: 30m` 은 "생성 후 30분"이 아니라 **"마지막 접근 후 30분"** 임이 관측된다(§3).
+- 세션 키가 2개 보였다(`763025de`, `3ab4aedc`). 뒤엣것은 기동 확인용 readiness 요청이 남긴 **고아 세션**(쿠키를 저장하지 않은 요청도 속성이 들어가면 저장된다). 우리 쿠키 세션은 `763025de`.
 
 확인 4 ★ — **게이트웨이를 재시작하고 같은 쿠키로 요청한다.**
 ```bash
@@ -118,15 +151,35 @@ curl -s              localhost:8080/debug/session | jq -c   # 대조군: 새 세
 `HttpSession` 이었다면 결과가 어땠겠는가?
 
 ```
-# 출력 붙여넣기
+# --- 게이트웨이 프로세스 종료 → 재기동(새 JVM) 후 ---
+
+$ curl -s -b /tmp/c.txt localhost:8080/debug/session | jq -c   # 같은 쿠키 (이어지는가?)
+{"sessionId":"763025de","visitCount":5,"createdAt":"2026-07-21T00:01:19.575Z","maxIdleTime":"PT30M","thread":"lettuce-nioEventLoop-5-2"}
+
+$ curl -s              localhost:8080/debug/session | jq -c   # 대조군: 쿠키 없음 (새 세션?)
+{"sessionId":"17fbcff7","visitCount":1,"createdAt":"2026-07-21T00:02:15.098Z","maxIdleTime":"PT30M","thread":"parallel-4"}
 ```
+
+관찰(결정적):
+- **같은 쿠키**: `sessionId=763025de`, `createdAt` 이 **재시작 이전 시각(00:01:19) 그대로**, `visitCount` 도 이어진다(재시작 전 4 → 5). 세션이 프로세스 힙이 아니라 **Valkey 에 있었으므로 새 JVM 이 그대로 복원**했다.
+- **대조군**: 새 `sessionId=17fbcff7`, `visitCount=1`, `createdAt` 이 재시작 이후. 쿠키가 없으니 새 세션.
+- `HttpSession`(JVM 힙)이었다면 재시작으로 **모든 세션이 소실**되어, 같은 쿠키를 보내도 서버가 알아보지 못하고 `visitCount=1` 새 세션으로 떨어졌을 것이다. 이 차이가 외부 세션 저장소를 쓰는 이유다 — BFF 에서는 곧 "게이트웨이 재배포에도 로그인이 유지된다"를 뜻한다.
 
 확인 5 — 각 응답의 `thread` 필드를 비교한다.
 관찰 포인트: 1차 요청과 2차 이후 요청의 스레드 이름 접두사가 다른가? 왜 그럴까?
 
 ```
-# 출력 붙여넣기
+요청                          thread
+─────────────────────────────────────────────────
+1차 (세션 없음 · 신규 생성)    parallel-4
+2차 이후 (세션 있음 · 복원)     lettuce-nioEventLoop-5-2
+대조군 (쿠키 없음 · 신규 생성)   parallel-4
 ```
+
+관찰:
+- 세션을 **Valkey 에서 읽어온 요청**(2차 이후)은 그 조회를 완료한 **Lettuce(Redis 클라이언트) 이벤트 루프**에서 후속 코드가 이어진다 → `lettuce-nioEventLoop-*`.
+- 세션이 **없어 새로 만드는 요청**(1차·대조군)은 저장소에서 복원할 게 없어 HTTP 이벤트 루프(`parallel-*`)에서 그대로 실행된다.
+- 즉 "어느 스레드에서 실행되는가"는 **직전에 완료된 비동기 작업이 결정**한다(§5). 여기서 블로킹하면 HTTP 루프가 아니라 Redis 커넥션 루프가 멈춰 **모든 요청의 세션 조회가 함께 막힌다** — 그래서 논블로킹 규율은 전 구간에 적용된다.
 
 ## 5. 함정 / 실패 모드
 
