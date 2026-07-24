@@ -27,7 +27,7 @@ Step 4 에서 세션을 Valkey 에 붙였다. **OAuth2 로그인보다 먼저** 
 | 조회 비용 | 메모리 접근 (즉시) | **네트워크 I/O** (논블로킹) |
 | 반환형 | `HttpSession` (동기) | `Mono<WebSession>` (비동기) |
 | 저장 객체 | 아무거나 | **직렬화 가능**해야 함 |
-| 실패 모드 | 없음 (메모리에 있으면 있음) | 저장소 장애 시 **전원 로그아웃** |
+| 실패 모드 | 없음 (메모리에 있으면 있음) | 저장소 장애 시 **인증된 요청이 전부 500** (§6 실측) |
 
 BFF 패턴에서는 access token 을 세션에 보관하므로, 세션이 곧 로그인 상태다.
 그래서 세션 저장소의 가용성이 **인증 시스템 전체의 가용성**이 된다.
@@ -190,7 +190,7 @@ $ curl -s              localhost:8080/debug/session | jq -c   # 대조군: 쿠�
 | 큰 객체를 세션에 저장 | 요청마다 지연 증가 | **매 요청 직렬화/역직렬화 + 네트워크 왕복** | 세션에는 최소한만. 토큰 외 캐시 데이터 금지 |
 | 직렬화 호환성 | 배포 후 기존 세션에서 역직렬화 실패 | 저장된 클래스 구조가 바뀜 | 직렬화 포맷을 명시적으로 관리(JSON 등), 배포 시 세션 무효화 정책 |
 | `Secure` 쿠키 누락 | 운영에서 쿠키 평문 전송 | 로컬 http 기준 설정을 그대로 배포 | 운영은 HTTPS + `Secure` 강제 |
-| 저장소 장애 | **전원 로그아웃** | 세션 = 로그인 상태 | Sentinel HA, 장애 시 동작 정의 |
+| 저장소 장애 | **로그인한 사용자만 500** (로그아웃이 아니다) | 세션을 읽지 못해 인증 판단 자체가 불가능 | Sentinel HA, 장애 시 동작 정의. 실측은 §6 |
 
 ### 관찰된 사실 — 애플리케이션 코드가 Lettuce 스레드에서 돈다
 
@@ -210,14 +210,117 @@ HTTP 이벤트 루프가 아니라 **Redis 커넥션의 루프**가 멈추므로
 
 > 교훈: "어느 스레드에서 실행되는가"는 **직전에 완료된 비동기 작업이 결정한다.**
 > 코드만 보고 짐작할 수 없다. 그래서 논블로킹 규율은 특정 구간이 아니라 **전 구간**에 적용된다.
+>
+> ⚠️ **단, 이 설명은 2차 요청(`lettuce-*`)에만 맞다.** 1차 요청이 `parallel-*` 인 것은
+> 비동기 완료 스레드 때문이 아니라 `ReactiveRedisSessionRepository.createSession()` 이
+> `publishOn(Schedulers.parallel())` 를 **명시적으로 걸기 때문**이다. 두 가지 원인이 섞여 있었다.
+> 소스 근거는 §6 첫 항목.
 
 ## 6. 남은 의문
 
 > ✍️ **직접 작성하는 섹션.**
 
-- [ ] 1차 요청은 왜 `parallel-*` 이고 2차부터는 `lettuce-*` 인가?
-      1차도 Valkey 를 조회했을 텐데 무엇이 다른가?
-- [ ] TTL 은 요청마다 정말 갱신되는가? (`TTL` 을 연속 관찰해 확인)
-- [ ] Sentinel failover 가 일어나면 진행 중인 세션은 어떻게 되는가?
-- [ ] 세션 직렬화 포맷은 현재 무엇인가? 운영 배포 시 클래스 변경을 어떻게 다룰 것인가?
+### 이번에 답이 나온 것
+
+- [x] **1차 요청은 왜 `parallel-*` 이고 2차부터는 `lettuce-*` 인가?**
+      → **1차는 Valkey 를 조회하지 않는다.** 쿠키가 없으니 복원할 세션이 없고, 대신 `createSession()`
+      경로를 탄다. 그 경로에 `publishOn(Schedulers.parallel())` 이 **명시돼 있다.**
+
+      ```java
+      // spring-session-data-redis / ReactiveRedisSessionRepository.java
+      public Mono<RedisSession> createSession() {
+          return Mono.fromSupplier(() -> this.sessionIdGenerator.generate())
+                  .subscribeOn(Schedulers.boundedElastic())
+                  .publishOn(Schedulers.parallel())      // ← 여기
+                  ...
+      }
+
+      public Mono<RedisSession> findById(String id) {
+          return this.sessionRedisOperations.opsForHash().entries(sessionKey)   // Schedulers 호출 없음
+                  ...
+      }
+      ```
+
+      | 요청 | 경로 | Redis 명령 | 이후 스레드 |
+      |---|---|---|---|
+      | 1차 (쿠키 없음) | `createSession()` | **없음** | `parallel-*` (명시적 `publishOn`) |
+      | 2차 (쿠키 있음) | `findById()` | `HGETALL` | `lettuce-nioEventLoop-*` (응답 수신 스레드) |
+
+      "직전에 완료된 비동기 작업이 스레드를 결정한다"는 §5 의 설명은 2차에만 해당한다.
+      1차는 **라이브러리가 스케줄러를 명시적으로 지정**한 결과다. 두 가지가 섞여 있었다.
+
+      호출 지점은 Security 체인의 `ServerRequestCacheWebFilter` 다.
+      전체 추적은 [02](02-webflux-event-loop.md) §4 확인 5.
+
+- [x] **TTL 은 요청마다 정말 갱신되는가?**
+      → **그렇다.** 요청 직전/직후 TTL 을 3회 연속 관찰했다.
+
+      ```
+      TTL=1769  → 요청 1회 → TTL=1800
+      TTL=1797  → 요청 1회 → TTL=1800
+      TTL=1797  → 요청 1회 → TTL=1800
+      ```
+
+      매번 정확히 `1800`(=30분)으로 리셋된다. `timeout: 30m` 은 "생성 후 30분"이 아니라
+      **"마지막 접근 후 30분"** 임이 확정됐다. 활동 중인 사용자의 세션은 만료되지 않는다.
+
+- [x] **세션 직렬화 포맷은 현재 무엇인가?**
+      → **JDK(Java) 직렬화다.** 저장된 값의 첫 바이트를 그대로 읽었다.
+
+      ```
+      $ docker exec unigate-valkey valkey-cli --no-raw HGET "spring:session:sessions:<id>" \
+          "sessionAttr:SPRING_SECURITY_CONTEXT"
+      "\xac\xed\x00\x05sr\x00=org.springframework.security.core.context.SecurityContextImpl\x00\x00...
+      ```
+
+      `\xac\xed\x00\x05` 는 **Java 직렬화 스트림의 매직 넘버(`0xACED0005`)** 이고, 뒤이어
+      `sr`(TC_OBJECT)과 FQCN 이 평문으로 박혀 있다. 즉 **클래스 이름과 필드 구조가 저장 포맷의 일부**다.
+
+      운영 배포 시 함의:
+      - Spring Security 클래스의 `serialVersionUID` 가 바뀌는 버전 업그레이드는 기존 세션의
+        역직렬화를 깨뜨릴 수 있다. 롤링 배포 중이라면 **구/신 버전 파드가 같은 세션을 두고 갈린다.**
+      - BFF 는 토큰까지 세션에 넣으므로(04 문서) 영향 범위가 "로그인 풀림"이다.
+      - 대안은 JSON 직렬화기(`GenericJackson2JsonRedisSerializer`)로 바꾸는 것이지만,
+        Spring Security 타입들은 Jackson 모듈 등록이 필요해 그 자체로 별도 작업이 된다.
+      - 최소한의 대비는 **버전 업그레이드 시 세션 무효화 정책을 미리 정해두는 것**이다.
+
+- [x] **세션 저장소가 죽으면 정확히 어떻게 되는가?** (§5 "전원 로그아웃"의 실제 확인)
+      → **로그아웃이 아니라 500 이다.** `docker stop unigate-valkey` 후 관측했다.
+
+      ```
+      정상 상태                        Valkey 정지 후
+      ─────────────────────────────────────────────────────
+      /debug/whoami       = 200        /debug/whoami   = 500
+      /api/echo           = 200        /api/echo       = 500
+      /actuator/health    = 200        health          = 503
+      readiness           = 200        readiness       = 503  ({"status":"DOWN"})
+                                       liveness        = 200
+                                       쿠키 없는 요청   = 302  (로그인 리다이렉트는 정상)
+      ```
+      ```
+      RedisConnectionFailureException: Unable to connect to Redis
+        *__checkpoint ⇢ ServerRequestCacheWebFilter [DefaultWebFilterChain]
+      ```
+
+      해석:
+      - **"전원 로그아웃"이라는 표현은 정확하지 않았다.** 로그아웃이라면 로그인 화면으로 유도되지만,
+        실제로는 세션을 **읽을 수 없어** 인증 판단 자체가 불가능해 500 이 난다.
+      - 예외 발생 지점이 `ServerRequestCacheWebFilter` 다. 위 첫 항목에서 본 그 필터다 —
+        **모든 요청이 세션을 건드린다**는 사실이 장애 시에 이런 형태로 드러난다.
+      - 세션 쿠키가 **없는** 요청은 302 로 정상 동작한다. 즉 "로그인은 되는데 로그인한 사람만 500" 이다.
+      - **liveness 가 200 을 유지한 것이 중요하다.** readiness 만 DOWN 이므로 k8s 는 트래픽만 끊고
+        파드를 재시작하지 않는다. liveness 에 redis 를 넣었다면 Valkey 장애가 **전 파드 재시작 루프**로
+        번졌을 것이다. `application.yml` 의 readiness 그룹에만 `redis` 를 넣은 설정이 옳았다.
+
+### 아직 모르는 것
+
+- [ ] **Sentinel failover 가 일어나면 진행 중인 세션은 어떻게 되는가?**
+      → 현재 `docker-compose.yml` 은 **마스터 1 + sentinel 1** 구성이라 승격할 replica 가 없다.
+      failover 자체를 재현할 수 없어 미확인으로 남긴다. 실험하려면 replica 를 추가해야 한다.
+
+      다만 관련해서 하나 관측됐다. **마스터만 재시작하면 게이트웨이가 곧바로 회복하지 못한다.**
+      `docker stop/start unigate-valkey` 후 게이트웨이를 재기동하니
+      `Cannot connect Redis Sentinel at redis://127.0.0.1:26379` 로 연결에 실패했고,
+      **sentinel 컨테이너까지 재시작**한 뒤에야 정상화됐다.
+      복구 절차가 "마스터만 살리면 된다"가 아니라는 뜻이다 — 런북에 반영할 사항.
 - [ ]
