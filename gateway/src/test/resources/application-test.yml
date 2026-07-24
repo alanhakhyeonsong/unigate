@@ -1,0 +1,54 @@
+# Phase 1 마감(Step 9) — 게이트웨이를 Keycloak·DB·Valkey 없이 부팅하기 위한 테스트 프로파일.
+#
+# 목적: SecurityConfig 의 인가 경계(공개 경로 / 미인증 리다이렉트 / PKCE)를 오프라인으로 회귀 고정.
+# 로그인을 "완료"하지 않고 리다이렉트 시작까지만 검증하므로 실제 IdP·다운스트림 호출이 없다.
+#
+# issuer-uri(discovery)를 쓰면 부팅 시 Keycloak 에 접속해 엔드포인트를 받아온다 → 오프라인 불가.
+# 그래서 provider 엔드포인트를 **정적으로** 박아 discovery 자체를 없앤다. 존재하지 않는 포트(:1)를
+# 가리켜 두며, 이 테스트들에선 실제로 호출되지 않는다(mock 서버조차 띄울 필요 없음).
+spring:
+  # DB(R2DBC/Flyway/DataSource)·Redis·Session 자동구성은 이 슬라이스의 관심사가 아니고 외부 의존이라
+  # 부팅을 막는다. r2dbc/datasource 는 URL 이 없으면 기동 자체가 실패하므로 반드시 제외한다.
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration
+      - org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration
+      - org.springframework.boot.autoconfigure.r2dbc.R2dbcAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.r2dbc.R2dbcDataAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.r2dbc.R2dbcRepositoriesAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisReactiveAutoConfiguration
+      - org.springframework.boot.autoconfigure.session.SessionAutoConfiguration
+  security:
+    oauth2:
+      client:
+        registration:
+          keycloak:
+            provider: keycloak
+            client-id: test-client
+            client-secret: test-secret
+            authorization-grant-type: authorization_code
+            redirect-uri: "{baseUrl}/login/oauth2/code/keycloak"
+            scope: openid,profile,email
+        provider:
+          keycloak:
+            # 정적 엔드포인트 — discovery 없이 ClientRegistration 을 구성한다. 실제 호출은 없다.
+            authorization-uri: http://localhost:1/realms/test/protocol/openid-connect/auth
+            token-uri: http://localhost:1/realms/test/protocol/openid-connect/token
+            jwk-set-uri: http://localhost:1/realms/test/protocol/openid-connect/certs
+            user-info-uri: http://localhost:1/realms/test/protocol/openid-connect/userinfo
+            user-name-attribute: preferred_username
+
+# redis health 기여자를 제외했으므로 readiness 그룹에서도 뺀다(그대로 두면 부팅 경고).
+management:
+  endpoint:
+    health:
+      group:
+        readiness:
+          include: readinessState
+
+# 라우트 대상(실제 프록시는 발생하지 않음 — 미인증은 라우팅 전에 차단됨).
+unigate:
+  downstream:
+    demo-uri: http://localhost:1
