@@ -16,6 +16,8 @@ import org.springframework.security.oauth2.client.web.server.ServerOAuth2Authori
 import org.springframework.security.oauth2.client.web.server.ServerOAuth2AuthorizedClientRepository
 import org.springframework.security.oauth2.client.web.server.WebSessionServerOAuth2AuthorizedClientRepository
 import org.springframework.security.web.server.SecurityWebFilterChain
+import org.springframework.security.web.server.authentication.ServerAuthenticationFailureHandler
+import org.springframework.security.web.server.authentication.ServerAuthenticationSuccessHandler
 import org.springframework.security.web.server.authentication.logout.DelegatingServerLogoutHandler
 import org.springframework.security.web.server.authentication.logout.SecurityContextServerLogoutHandler
 import org.springframework.security.web.server.authentication.logout.ServerLogoutHandler
@@ -42,6 +44,9 @@ class SecurityConfig(
     authorizationRequestResolver: ServerOAuth2AuthorizationRequestResolver,
     clientRegistrationRepository: ReactiveClientRegistrationRepository,
     authorizedClientRepository: ServerOAuth2AuthorizedClientRepository,
+    authenticationSuccessHandler: ServerAuthenticationSuccessHandler,
+    authenticationFailureHandler: ServerAuthenticationFailureHandler,
+    auditingLogoutHandler: ServerLogoutHandler,
   ): SecurityWebFilterChain =
     http
       .authorizeExchange { exchanges ->
@@ -63,6 +68,10 @@ class SecurityConfig(
       }.oauth2Login { oauth2 ->
         // PKCE 를 쓰기 위해 resolver 를 명시적으로 갈아끼운다. 이유는 아래 빈 주석 참조.
         oauth2.authorizationRequestResolver(authorizationRequestResolver)
+        // Phase 4: 로그인 성공/실패를 감사로그 + 메트릭으로 남긴 뒤 기본 리다이렉트로 위임한다.
+        // (WebFlux 는 인증 이벤트를 기본 발행하지 않아 핸들러를 직접 갈아끼운다.)
+        oauth2.authenticationSuccessHandler(authenticationSuccessHandler)
+        oauth2.authenticationFailureHandler(authenticationFailureHandler)
       }.logout { logout ->
         // ── Phase 1.5: RP-Initiated Logout ──────────────────────────────
         // 기본 로그아웃 엔드포인트는 POST /logout (CSRF 보호됨).
@@ -79,6 +88,8 @@ class SecurityConfig(
         //   그래서 무효화 대신 민감 attribute 만 제거해 충돌을 피한다. 남는 빈 세션은 TTL 로 만료된다.
         logout.logoutHandler(
           DelegatingServerLogoutHandler(
+            // Phase 4: 세션을 지우기 **전에** 누가 로그아웃했는지 감사로그로 남긴다(인증 정보가 아직 살아있음).
+            auditingLogoutHandler,
             SecurityContextServerLogoutHandler(),
             ServerLogoutHandler { exchange, authentication ->
               authorizedClientRepository.removeAuthorizedClient(

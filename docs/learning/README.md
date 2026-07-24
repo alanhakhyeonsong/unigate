@@ -21,6 +21,7 @@
 | [09](09-rp-initiated-logout-session-invalidation.md) | RP-Initiated Logout 과 세션 무효화 함정 | 1.5 | 학습중 | 게이트웨이 세션만 지우면 자동 재로그인된다. Keycloak end_session 까지. 단 Spring Session invalidate 는 500 |
 | [10](10-jwks-local-verification.md) | JWKS 로컬 검증 (introspection 배제) | 2 | 학습중 | 공개키를 캐시하고 로컬 서명검증. kid 미스 시만 재조회. reactive 디코더 예외 문구가 servlet 과 다름 |
 | [11](11-resilience-ratelimit-circuitbreaker.md) | Resilience — 토큰버킷 rate limit + Circuit Breaker | 3 | 학습중 | Redis 토큰버킷으로 429, CB+Timeout 으로 장애 fast-fail(503). 2000ms→10ms 로 회로 열림 관찰 |
+| [12](12-observability-audit-r2dbc.md) | 관측성 + 감사로그 (R2DBC 첫 사용) | 4 | 학습중 | R2DBC 엔 영속성 컨텍스트가 없어 명시 INSERT + 논블로킹. WebFlux 는 인증 이벤트 미발행 → 커스텀 핸들러 |
 
 상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
 
@@ -49,9 +50,9 @@
 
 ### Phase 3~4 — Resilience · 관측성 · 영속성
 
-- [ ] **R2DBC vs JPA** — 지연로딩·더티체킹·영속성 컨텍스트가 없다는 것의 실제 영향
+- [x] **R2DBC vs JPA** — 지연로딩·더티체킹·영속성 컨텍스트가 없다는 것의 실제 영향 → [12](12-observability-audit-r2dbc.md)
 - [ ] **Reactive 트랜잭션** — `@Transactional` 이 왜 그대로 동작하지 않는가
-- [ ] **Resilience4j (reactive)** — Circuit Breaker · Bulkhead · Timeout 의 상호작용
+- [x] **Resilience4j (reactive)** — Circuit Breaker · Bulkhead · Timeout 의 상호작용 → [11](11-resilience-ratelimit-circuitbreaker.md)
 
 ### 참고 (직접 쓰지는 않지만 이해가 필요한 것)
 

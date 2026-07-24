@@ -14,15 +14,25 @@ spring:
   # 요구하기 때문. Lettuce 연결은 지연 초기화라 부팅 시 실제 접속하지 않고, 미인증 /api 요청은
   # 라우팅 전에 302 로 막혀 rate limiter 필터가 돌지 않으므로 이 테스트에서 redis 접속은 없다.
   # 대신 redis health 기여자만 꺼 health 200 을 지킨다(아래 management.health.redis.enabled=false).
+  #
+  # ⚠️ R2DBC 도 제외하지 않는다(Phase 4): R2dbcAuditLogAdapter 가 DatabaseClient 빈을 요구한다.
+  # dummy URL + pool.initial-size=0 으로 커넥션 팩토리만 만들고 부팅 시 접속하지 않는다. 감사 저장은
+  # 로그인 시점에만 일어나는데 이 테스트들은 로그인을 완료하지 않으므로 실제 DB 접속이 없다.
+  # (JDBC 계열 DataSource/Flyway 는 여전히 제외 — 이 테스트에 불필요.)
   autoconfigure:
     exclude:
       - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
       - org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration
       - org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration
-      - org.springframework.boot.autoconfigure.r2dbc.R2dbcAutoConfiguration
-      - org.springframework.boot.autoconfigure.data.r2dbc.R2dbcDataAutoConfiguration
-      - org.springframework.boot.autoconfigure.data.r2dbc.R2dbcRepositoriesAutoConfiguration
       - org.springframework.boot.autoconfigure.session.SessionAutoConfiguration
+  r2dbc:
+    # 접속하지 않는 dummy 좌표. initial-size=0 이라 부팅 시 커넥션을 만들지 않는다.
+    url: r2dbc:postgresql://localhost:5432/unigate_test
+    username: test
+    password: test
+    pool:
+      initial-size: 0
+      max-size: 1
   security:
     oauth2:
       client:
@@ -48,6 +58,9 @@ spring:
 management:
   health:
     redis:
+      enabled: false
+    # R2DBC 도 dummy 좌표라 health ping 이 DOWN → health 503 이 된다. 끈다(Phase 4).
+    r2dbc:
       enabled: false
   endpoint:
     health:
