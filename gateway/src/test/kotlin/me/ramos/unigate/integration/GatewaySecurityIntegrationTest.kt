@@ -83,6 +83,19 @@ class GatewaySecurityIntegrationTest {
   }
 
   @Test
+  fun `CSRF 토큰 없는 POST logout 은 403 으로 거부된다`() {
+    // 로그아웃은 상태를 바꾸는 요청이라 CSRF 로 보호된다(SecurityConfig 의 logout 설정).
+    // 토큰 없이 POST /logout 하면 CsrfWebFilter 가 라우팅 이전에 403 으로 막는다.
+    // (실제 로그아웃 성공 경로 — Keycloak end_session 왕복 — 은 브라우저 e2e 로 검증한다.)
+    client
+      .post()
+      .uri("/logout")
+      .exchange()
+      .expectStatus()
+      .isForbidden
+  }
+
+  @Test
   fun `로그인 시작 요청은 PKCE(S256)를 붙여 Keycloak 인가 엔드포인트로 리다이렉트한다`() {
     // confidential client 에는 Spring 이 PKCE 를 자동 적용하지 않는다 → SecurityConfig 의
     // authorizationRequestResolver(withPkce) 가 실제로 code_challenge 를 붙이는지 회귀 검증한다.
