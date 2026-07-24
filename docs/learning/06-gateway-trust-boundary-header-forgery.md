@@ -184,6 +184,73 @@ true
   strip-after-relay 오답이었다면 relay 가 넣은 토큰을 strip 이 지워 여기서 `false`(또는 다운스트림
   401)가 됐을 것이다(§3.2 표). 정상 경로 무회귀 확인.
 
+확인 5 ★ — "인증은 됐지만 토큰이 없는" 상태 재현 후 위조 헤더 (§6 Q1 추적, **예상과 다른 결과**)
+```bash
+# Valkey 세션 해시에서 인증 컨텍스트(SPRING_SECURITY_CONTEXT)는 남기고
+# authorized client(토큰) 속성만 삭제한다 → "로그인 유지 + 토큰 없음" 상태.
+KEY='spring:session:sessions:<sessionId>'
+docker exec unigate-valkey valkey-cli HDEL "$KEY" \
+  'sessionAttr:org.springframework.security.oauth2.client.web.server.WebSessionServerOAuth2AuthorizedClientRepository.AUTHORIZED_CLIENTS'
+curl -s -b "SESSION=$S" localhost:8080/debug/whoami | jq '{authenticated, "accessToken.present": .accessToken.present, refreshTokenPresent}'
+curl -s -o /dev/null -w 'HTTP %{http_code}\n' -b "SESSION=$S" -H 'Authorization: Bearer FORGED' localhost:8080/api/echo
+```
+```json
+// whoami — 상태 재현 성공: 인증은 유지, 토큰만 사라짐
+{ "authenticated": true, "accessToken.present": false, "refreshTokenPresent": false }
+```
+```
+// /api/echo (위조 헤더 + 토큰 없음) — 다운스트림에 닿지 않는다
+HTTP 302 → Location: https://<keycloak-host>/realms/test/protocol/openid-connect/auth
+             ?response_type=code&client_id=unigate-client&code_challenge=…&code_challenge_method=S256
+// 게이트웨이 로그:
+[post] GET /api/echo status=302 FOUND signal=onError elapsedMs=1
+```
+
+관찰(★ 예상과 달랐다):
+- 예상은 "토큰 없음 → tokenRelay 가 `defaultIfEmpty(exchange)` 로 통과 → **위조 헤더가 다운스트림
+  도달**"이었다(§1·§5 의 서술). 실제로는 **302 로 Keycloak 재인가**가 떴고 다운스트림에 닿지 않았다.
+- 결정적 단서는 로그의 **`signal=onError`** — 302 가 정상 흐름이 아니라 **에러 시그널**로 만들어졌다.
+  즉 tokenRelay 가 토큰을 못 구하자 **재인가 필요 예외**(`ClientAuthorizationRequiredException` 계열)를
+  던졌고, Spring Security 의 리다이렉트 필터가 그 예외를 잡아 **새 authorization 요청**(fresh
+  `code_challenge` = 새 PKCE)으로 바꿨다.
+- 왜 예상과 달랐나: `defaultIfEmpty` 통과는 principal 이 **Authentication 이 아닐 때**(익명)만 탄다.
+  인증된 principal 이 토큰만 없으면 tokenRelay 는 manager 를 호출하고, manager 가 재인가를 요구하며
+  예외로 끊는다. 우리 정책은 `/api/**` 를 `authenticated()` 로 묶으므로 익명은 애초에 이 라우트에
+  못 온다 → **이 config 에선 "인증 + 토큰 없음"의 통과 경로가 실질적으로 닫혀 있다.**
+- 그럼 strip 은 무의미한가? **아니다.** strip 은 tokenRelay 가 무엇을 하든 **그 앞에서 무조건** 인입
+  Authorization 을 비운다. 재인가 예외가 안 나는 경로(예: 라우트를 `permitAll` 로 바꾸거나, manager 가
+  예외 대신 empty 를 반환하는 설정)에서도 위조는 이미 제거돼 있다. 관측된 1차 방어는 재인가 리다이렉트,
+  strip 은 그와 무관하게 항상 도는 **무조건 방어선**이다(defense-in-depth).
+
+확인 6 ★ — strip 의 단독 가치 격리 실험 (§6 Q1-하위2, **로컬 임시·원복·커밋 안 함**)
+```bash
+# pass-through 경로를 태우려면 익명 principal 이 tokenRelay 라우트에 닿아야 한다.
+# 그래서 /api/** 를 (local 한정) 임시 permitAll 로 열고, 익명으로 위조 헤더를 보낸다.
+# 두 상태를 각각 재시작해 비교: [State1] strip 있음 vs [State2] strip 줄 주석.
+curl -s -H 'Authorization: Bearer FORGED' localhost:8080/api/echo | jq '{
+  http_reached_downstream: (.path == "/echo"),
+  forged_survived: ((.headers.authorization // "") | contains("FORGED")),
+  authorization_value: (.headers.authorization // "없음")
+}'
+```
+```json
+// [State 1] permitAll + strip 있음  — 익명 위조 헤더가 제거된다
+{ "http_reached_downstream": true, "forged_survived": false, "authorization_value": "없음" }
+
+// [State 2] permitAll + strip 주석  — 익명 위조 헤더가 그대로 통과한다
+{ "http_reached_downstream": true, "forged_survived": true, "authorization_value": "Bearer FORGED" }
+```
+
+관찰:
+- **이게 strip 의 단독 가치를 눈으로 본 유일한 실험이다.** 확인 5 의 "인증+토큰없음" 은 이 config 에서
+  302 재인가로 가려져 strip 효과가 드러나지 않았다. 익명이 라우트에 닿는 조건(permitAll)을 만들자
+  비로소 pass-through 경로가 살아나고, 거기서 **strip 유무가 결과를 가른다.**
+- State 2 에서 `Bearer FORGED` 가 다운스트림에 그대로 도달했다 — tokenRelay 의 `defaultIfEmpty(exchange)`
+  가 익명 요청을 손대지 않고 흘려보낸 것이다(§3.1, 05 §5). strip 을 다시 켜면(State 1) 위조가 사라진다.
+  **§1·§5 가 서술한 "토큰 없으면 위조 통과"는 이 조건에서 실재함이 확인됐다.**
+- 실험용 변경(permitAll, strip 주석)은 **`git checkout` 으로 원복**했고 커밋하지 않았다. 원복 후
+  익명 `/api/echo` 는 다시 302(=`authenticated()` 복구)로 끊긴다.
+
 ## 5. 함정 / 실패 모드
 
 | 함정 | 증상 | 원인 | 해결 |
@@ -210,15 +277,40 @@ true
 직접 주입하게 되면(다운스트림이 그걸 신뢰하는 순간), **그 헤더도 반드시 인입분을 strip** 해야
 한다. 안 하면 클라이언트가 `X-User-Id: admin` 을 위조해 보낼 수 있다.
 
+### 실측 정정: "토큰 없음"의 실제 동작 (§4 확인 5) ★
+
+이 문서 §1·§5(표의 "tokenRelay 에 방어를 위임" 행)는 **"토큰이 없으면 `defaultIfEmpty` 로 위조 헤더가
+그대로 다운스트림에 도달한다"** 고 서술했다. 확인 5 에서 그 전제를 직접 실험했더니 **이 config 에선
+그렇게 되지 않았다.**
+
+- 인증된 사용자의 토큰만 지우면(HDEL), 다음 요청은 통과가 아니라 **302 재인가**로 끊긴다.
+  tokenRelay 가 manager 를 호출하다 재인가 필요 예외를 던지고(`signal=onError`), 리다이렉트 필터가
+  그걸 새 authorization 요청으로 바꾼다. 위조 헤더는 다운스트림에 닿지 못한다.
+- `defaultIfEmpty` 통과는 **principal 이 Authentication 이 아닐 때(익명)**만 탄다. 그런데 `/api/**` 는
+  `authenticated()` 라 익명은 라우트에 오기 전에 302 로 끊긴다. 즉 **현재 정책에서 "위조가 다운스트림에
+  통과"하는 경로는 실질적으로 닫혀 있다.**
+
+그럼 §1·§5 의 서술은 틀렸나? **원리로는 맞지만, 이 config 에서 관측되는 1차 방어가 strip 이 아니라
+재인가 리다이렉트라는 점이 빠져 있었다.** strip 의 가치는 여전하다 — tokenRelay 의 동작(통과/예외)과
+무관하게 **무조건** 인입 Authorization 을 비우므로, 라우트를 `permitAll` 로 열거나 manager 설정이
+바뀌어 통과 경로가 살아나는 순간에도 위조는 이미 제거돼 있다. **strip = 조건 무관 방어선, 재인가
+리다이렉트 = 이 config 의 우연한 1차 차단.** 두 번째가 있다고 첫 번째를 빼면 안 된다.
+
 ## 6. 남은 의문
 
 검증 중 실제로 드러난, 아직 못 닫은 질문들.
 
-- [ ] **핵심 방어 대상을 아직 직접 못 봤다.** §4 확인 2 는 "미인증→302"만 봤을 뿐, strip 이 진짜로
-      지키는 **"인증은 됐지만 토큰이 없는"** 상태에서 위조 헤더가 막히는 장면은 재현하지 못했다.
-      그 상태를 로컬에서 어떻게 만드나? (세션의 authorized client 만 지우기? refresh token 강제 만료
-      후 access 만료? Valkey 에서 `AUTHORIZED_CLIENTS` 만 삭제?) — 이걸 만들어 확인 1 을 그 조건에서
-      다시 돌려야 방어가 완결된다.
+- [x] ~~"인증은 됐지만 토큰이 없는" 상태를 재현해 위조 헤더 방어를 확인한다.~~ → **확인 5 에서 재현·검증.**
+      Valkey 세션에서 `AUTHORIZED_CLIENTS` 속성만 HDEL 하면 그 상태가 된다. **결과가 예상과 달랐다** —
+      통과가 아니라 302 재인가로 끊겼다(§4 확인 5, §5 "실측 정정"). 남은 하위 질문:
+  - [ ] ⏸ **(보류 — 재현 도구 부족)** **refresh 실패**(access 만료 + refresh token 도 폐기)일 때도
+        302 재인가로 끊기나, 아니면 05 §5 가 우려한 "다운스트림 401 + 재로그인 유도 없음"이 되나?
+        재현하려면 refresh token 을 서버측에서 폐기해야 하는데, **Keycloak admin 자격증명이 없고**
+        (env 엔 issuer·client·test-user 만) refresh token 값은 세션 안에만 있어(BFF) revoke 도 못 부른다.
+        → admin API 접근이 생기는 시점(로그아웃/회원관리 보강 작업)에 관찰한다.
+  - [x] ~~tokenRelay `defaultIfEmpty` 통과 경로에서 strip 없이 위조가 통과하는지 격리 실험.~~
+        → **확인 6 에서 검증.** `/api/**` 를 임시 permitAll 로 열어 익명 요청을 태우니, strip 없으면
+        `Bearer FORGED` 가 다운스트림 통과, strip 있으면 제거됨. **strip 의 단독 가치를 눈으로 확인.**
 - [ ] `X-Forwarded-*` 는 SCG 의 `ForwardedHeadersFilter` 가 관리한다는데, 이 strip 과 순서/책임이
       겹치지 않나? 클라이언트가 `X-Forwarded-For` 를 위조하면 지금 구조에서 어디까지 신뢰되나?
 - [ ] 다운스트림이 여럿이 되면 strip 목록을 라우트마다 복붙하게 된다. 공통 GlobalFilter 로 올리는 게
