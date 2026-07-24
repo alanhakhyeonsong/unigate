@@ -9,6 +9,7 @@
 |---|---|---|
 | `README.md` | 스택·구조·실행법 | ✅ |
 | `docs/PROJECT_SETUP_PLAN.md` | 설계 결정과 근거(SSOT) | ✅ |
+| `docs/IAM_PLATFORM_DECISION.md` | IAM 플랫폼 확장 결정(Phase 8 착수 전 게이트) | ✅ |
 | `docs/KEYCLOAK_REALM_SETUP.md` | Keycloak realm 구성·검증·런북 | ✅ |
 | `docs/learning/` | **개인 학습 문서** (§2) | ✅ |
 | `docs/plans/` | 작업용 계획·체크리스트 | ❌ `.gitignore` |
