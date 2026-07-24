@@ -62,6 +62,8 @@ kotest-runner-junit5 = { module = "io.kotest:kotest-runner-junit5", version.ref 
 kotest-assertions-core = { module = "io.kotest:kotest-assertions-core", version.ref = "kotest" }
 mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
 springmockk = { module = "com.ninja-squad:springmockk", version.ref = "springmockk" }
+# JWKS 통합 테스트용 — 자가서명 JWKS 를 띄워 kid 회전/서명검증을 검증한다. 버전은 spring-boot BOM 이 관리.
+mockwebserver = { module = "com.squareup.okhttp3:mockwebserver" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit-platform-launcher" }
 archunit-junit5 = { module = "com.tngtech.archunit:archunit-junit5", version.ref = "archunit" }
 

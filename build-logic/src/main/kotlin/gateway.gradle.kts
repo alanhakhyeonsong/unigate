@@ -44,6 +44,7 @@ dependencies {
     add("testImplementation", it.findLibrary("kotest-assertions-core").get())
     add("testImplementation", it.findLibrary("mockk").get())
     add("testImplementation", it.findLibrary("springmockk").get())
+    add("testImplementation", it.findLibrary("mockwebserver").get())
     add("testRuntimeOnly", it.findLibrary("junit-platform-launcher").get())
   }
 }
