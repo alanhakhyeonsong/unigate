@@ -15,6 +15,7 @@
 | [03](03-spring-session-valkey-reactive.md) | Spring Session + Valkey | 1 | 학습중 | 앱 재시작에도 세션이 살아남는다. 대신 세션 저장소가 인증 가용성이 된다 |
 | [04](04-oauth2-authorization-code-bff.md) | OAuth2 Authorization Code + BFF | 1 | 학습중 | 토큰은 세션에만 둔다. 세션은 Valkey에 있어도 **토큰은 기본값으로 힙에 남는다** |
 | [05](05-token-relay.md) | TokenRelay | 1 | 학습중 | 세션의 토큰을 다운스트림에 붙인다. 만료 갱신도 여기서. **단, 보안 필터는 아니다** |
+| [06](06-gateway-trust-boundary-header-forgery.md) | 게이트웨이 신뢰 경계와 헤더 위조 방어 | 1 | 학습중 | 인입 Authorization 은 **무조건 제거** 후 재주입. "제거"와 "덮어쓰기"는 다른 연산이다 |
 
 상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
 
@@ -34,6 +35,7 @@
 - [x] **OAuth2 Authorization Code + BFF** → [04](04-oauth2-authorization-code-bff.md)
 - [x] **TokenRelay** — 세션의 토큰을 다운스트림으로, 만료 시 refresh → [05](05-token-relay.md)
 - [x] **Spring Session + Valkey(Reactive)** → [03](03-spring-session-valkey-reactive.md)
+- [x] **게이트웨이 신뢰 경계 · 헤더 위조 방어** → [06](06-gateway-trust-boundary-header-forgery.md)
 
 ### Phase 2 — 토큰 검증
 
