@@ -19,6 +19,7 @@
 | [07](07-downstream-resource-server-audience.md) | 다운스트림 Resource Server 와 aud 검증 | 1 | 학습중 | Resource Server 는 기본적으로 `aud` 를 안 본다. 안 끼우면 같은 realm 의 아무 토큰이나 통과한다 |
 | [08](08-offline-integration-test-bff-gateway.md) | BFF 게이트웨이 오프라인 통합 테스트 | 1 | 학습중 | issuer-uri·DB·Redis 때문에 그냥은 부팅도 안 된다. 정적 endpoint + autoconfigure 제외로 외부의존 0 |
 | [09](09-rp-initiated-logout-session-invalidation.md) | RP-Initiated Logout 과 세션 무효화 함정 | 1.5 | 학습중 | 게이트웨이 세션만 지우면 자동 재로그인된다. Keycloak end_session 까지. 단 Spring Session invalidate 는 500 |
+| [10](10-jwks-local-verification.md) | JWKS 로컬 검증 (introspection 배제) | 2 | 학습중 | 공개키를 캐시하고 로컬 서명검증. kid 미스 시만 재조회. reactive 디코더 예외 문구가 servlet 과 다름 |
 
 상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
 
@@ -42,7 +43,7 @@
 
 ### Phase 2 — 토큰 검증
 
-- [ ] **JWKS 서명 검증** — introspection 대비 장단점, 키 회전(`kid` 미스) 대응
+- [x] **JWKS 서명 검증** — introspection 대비 장단점, 키 회전(`kid` 미스) 대응 → [10](10-jwks-local-verification.md)
 - [ ] **JWT 구조** — `iss` / `aud` / `azp` 가 각각 무엇을 보장하는가
 
 ### Phase 3~4 — Resilience · 관측성 · 영속성
