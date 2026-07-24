@@ -253,6 +253,7 @@ curl -s -X POST $BASE/protocol/openid-connect/token \
 | 게이트웨이 기동 시 issuer 검증 실패 | `KEYCLOAK_ISSUER_URI` 와 discovery의 `issuer` 불일치 | realm 이름 오타, Frontend URL 설정 확인 |
 | 로그인은 되는데 권한이 비어 있음 | Full scope allowed OFF + role scope 미매핑 | §4.6 |
 | 첫 로그인에서 비밀번호 변경 화면 | 사용자 비밀번호 Temporary=ON | Credentials 탭에서 Temporary OFF로 재설정 |
+| 로그인 직후 "Update Account Information"(`VERIFY_PROFILE`) 화면 | `firstName`/`lastName` 등 필수 프로필 항목이 빔. Keycloak declarative user profile이 둘 다 required로 둔다 | `setup-realm.sh` 재실행(기존 사용자 프로필도 갱신한다). 콘솔에서 직접 채워도 된다. **콜백까지 도달하지 못해 자동화 검증이 조용히 막힌다** |
 | 간헐적 401 (토큰 갱신 시점) | Revoke Refresh Token ON에 의한 rotation race | §4.1 대로 OFF |
 
 ---
