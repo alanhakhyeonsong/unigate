@@ -14,6 +14,7 @@
 | [02](02-webflux-event-loop.md) | WebFlux 이벤트 루프 | 1 | 학습중 | 요청당 스레드가 없다. 블로킹은 국소 손해가 아니라 전역 장애가 된다 |
 | [03](03-spring-session-valkey-reactive.md) | Spring Session + Valkey | 1 | 학습중 | 앱 재시작에도 세션이 살아남는다. 대신 세션 저장소가 인증 가용성이 된다 |
 | [04](04-oauth2-authorization-code-bff.md) | OAuth2 Authorization Code + BFF | 1 | 학습중 | 토큰은 세션에만 둔다. 세션은 Valkey에 있어도 **토큰은 기본값으로 힙에 남는다** |
+| [05](05-token-relay.md) | TokenRelay | 1 | 학습중 | 세션의 토큰을 다운스트림에 붙인다. 만료 갱신도 여기서. **단, 보안 필터는 아니다** |
 
 상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
 
@@ -31,6 +32,7 @@
 - [ ] **Kotlin Coroutine `suspend`** — 스레드가 아니라 연속(continuation)을 중단·재개한다는 것
 - [ ] **Reactor ↔ Coroutine 경계** — `mono { }`, `awaitBody()` 를 언제 어디에 쓰는가
 - [x] **OAuth2 Authorization Code + BFF** → [04](04-oauth2-authorization-code-bff.md)
+- [x] **TokenRelay** — 세션의 토큰을 다운스트림으로, 만료 시 refresh → [05](05-token-relay.md)
 - [x] **Spring Session + Valkey(Reactive)** → [03](03-spring-session-valkey-reactive.md)
 
 ### Phase 2 — 토큰 검증
