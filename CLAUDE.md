@@ -1,6 +1,7 @@
 # unigate — 프로젝트 지침
 
 > Spring Cloud Gateway 기반 중앙 인증 게이트웨이. 게이트웨이는 **인증만** 담당(BFF + Token Relay)하고 인가는 다운스트림이 처리한다.
+> ⚠️ 이 대전제는 **IAM 플랫폼으로 확장 결정됨**(`docs/IAM_PLATFORM_DECISION.md`, O4 승인). **Phase 8부터 적용**하며 Phase 1~7은 현 문구대로 진행한다. Phase 1~7 작업에 authz/테넌트 로직을 조기 유입하지 않는다.
 > 전역 지침(`~/.claude/CLAUDE.md`)을 상속한다. 이 문서는 **unigate 고유 규칙**만 담는다.
 
 ## 문서 지도

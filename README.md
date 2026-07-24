@@ -65,4 +65,4 @@ CI/CD 파이프라인 없이 로컬에서 직접 배포한다.
 ```
 
 자세한 설계·의사결정은 [`docs/PROJECT_SETUP_PLAN.md`](docs/PROJECT_SETUP_PLAN.md) 참고.
-IAM 플랫폼으로의 확장 방향(검토 중, 아직 미승인)은 [`docs/IAM_PLATFORM_DECISION.md`](docs/IAM_PLATFORM_DECISION.md) 참고.
+IAM 플랫폼으로의 확장은 **결정됨(Phase 8부터 적용)** — 목표 아키텍처는 [`docs/IAM_PLATFORM_DECISION.md`](docs/IAM_PLATFORM_DECISION.md) 참고.
