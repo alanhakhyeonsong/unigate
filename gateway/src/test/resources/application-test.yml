@@ -7,8 +7,13 @@
 # 그래서 provider 엔드포인트를 **정적으로** 박아 discovery 자체를 없앤다. 존재하지 않는 포트(:1)를
 # 가리켜 두며, 이 테스트들에선 실제로 호출되지 않는다(mock 서버조차 띄울 필요 없음).
 spring:
-  # DB(R2DBC/Flyway/DataSource)·Redis·Session 자동구성은 이 슬라이스의 관심사가 아니고 외부 의존이라
+  # DB(R2DBC/Flyway/DataSource)·Session 자동구성은 이 슬라이스의 관심사가 아니고 외부 의존이라
   # 부팅을 막는다. r2dbc/datasource 는 URL 이 없으면 기동 자체가 실패하므로 반드시 제외한다.
+  #
+  # ⚠️ Redis(reactive)는 제외하지 않는다(Phase 3): RedisRateLimiter 가 ReactiveRedisTemplate 빈을
+  # 요구하기 때문. Lettuce 연결은 지연 초기화라 부팅 시 실제 접속하지 않고, 미인증 /api 요청은
+  # 라우팅 전에 302 로 막혀 rate limiter 필터가 돌지 않으므로 이 테스트에서 redis 접속은 없다.
+  # 대신 redis health 기여자만 꺼 health 200 을 지킨다(아래 management.health.redis.enabled=false).
   autoconfigure:
     exclude:
       - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
@@ -17,8 +22,6 @@ spring:
       - org.springframework.boot.autoconfigure.r2dbc.R2dbcAutoConfiguration
       - org.springframework.boot.autoconfigure.data.r2dbc.R2dbcDataAutoConfiguration
       - org.springframework.boot.autoconfigure.data.r2dbc.R2dbcRepositoriesAutoConfiguration
-      - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
-      - org.springframework.boot.autoconfigure.data.redis.RedisReactiveAutoConfiguration
       - org.springframework.boot.autoconfigure.session.SessionAutoConfiguration
   security:
     oauth2:
@@ -40,8 +43,12 @@ spring:
             user-info-uri: http://localhost:1/realms/test/protocol/openid-connect/userinfo
             user-name-attribute: preferred_username
 
-# redis health 기여자를 제외했으므로 readiness 그룹에서도 뺀다(그대로 두면 부팅 경고).
+# redis 는 autoconfig 를 살렸지만(RedisRateLimiter 때문) 실제 접속은 없으므로 health ping 은 끈다
+# → /actuator/health 가 redis DOWN 으로 503 이 되는 것을 막는다. readiness 그룹도 readinessState 만.
 management:
+  health:
+    redis:
+      enabled: false
   endpoint:
     health:
       group:

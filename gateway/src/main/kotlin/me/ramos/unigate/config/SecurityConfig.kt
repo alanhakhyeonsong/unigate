@@ -198,6 +198,9 @@ class SecurityConfig(
         "/actuator/health",
         "/actuator/health/**",
         "/actuator/info",
+        // CB fallback — 인증된 /api 요청이 forward 로 도달하지만, 직접 접근해도 503 만 반환하므로
+        // 공개로 둔다(민감정보 없음). 인증 필요로 두면 forward 시 재인증에 걸릴 수 있다.
+        "/fallback/**",
       )
 
     /** local 프로파일에서만 열리는 검증용 프로브 (`SessionProbeConfig`, `AuthProbeConfig`). */

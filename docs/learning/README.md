@@ -20,6 +20,7 @@
 | [08](08-offline-integration-test-bff-gateway.md) | BFF 게이트웨이 오프라인 통합 테스트 | 1 | 학습중 | issuer-uri·DB·Redis 때문에 그냥은 부팅도 안 된다. 정적 endpoint + autoconfigure 제외로 외부의존 0 |
 | [09](09-rp-initiated-logout-session-invalidation.md) | RP-Initiated Logout 과 세션 무효화 함정 | 1.5 | 학습중 | 게이트웨이 세션만 지우면 자동 재로그인된다. Keycloak end_session 까지. 단 Spring Session invalidate 는 500 |
 | [10](10-jwks-local-verification.md) | JWKS 로컬 검증 (introspection 배제) | 2 | 학습중 | 공개키를 캐시하고 로컬 서명검증. kid 미스 시만 재조회. reactive 디코더 예외 문구가 servlet 과 다름 |
+| [11](11-resilience-ratelimit-circuitbreaker.md) | Resilience — 토큰버킷 rate limit + Circuit Breaker | 3 | 학습중 | Redis 토큰버킷으로 429, CB+Timeout 으로 장애 fast-fail(503). 2000ms→10ms 로 회로 열림 관찰 |
 
 상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
 

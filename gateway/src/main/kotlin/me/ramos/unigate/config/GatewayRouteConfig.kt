@@ -1,6 +1,8 @@
 package me.ramos.unigate.config
 
 import org.springframework.beans.factory.annotation.Value
+import org.springframework.cloud.gateway.filter.ratelimit.KeyResolver
+import org.springframework.cloud.gateway.filter.ratelimit.RedisRateLimiter
 import org.springframework.cloud.gateway.route.RouteLocator
 import org.springframework.cloud.gateway.route.builder.RouteLocatorBuilder
 import org.springframework.context.annotation.Bean
@@ -34,6 +36,8 @@ class GatewayRouteConfig {
   fun gatewayRoutes(
     builder: RouteLocatorBuilder,
     @Value("\${unigate.downstream.demo-uri}") demoUri: String,
+    redisRateLimiter: RedisRateLimiter,
+    rateLimitKeyResolver: KeyResolver,
   ): RouteLocator =
     builder
       .routes()
@@ -42,6 +46,13 @@ class GatewayRouteConfig {
           .path("/api/**")
           .filters { filters ->
             filters
+              // ── Phase 3: Rate limiting (Redis 토큰버킷) ──────────────────
+              // 다운스트림을 부르기 **전에** 한도를 검사해 초과분을 429 로 일찍 끊는다.
+              // 키는 sub(인증) 우선, 미인증은 IP (RateLimitConfig). 버킷 소진 시 429.
+              .requestRateLimiter { config ->
+                config.rateLimiter = redisRateLimiter
+                config.keyResolver = rateLimitKeyResolver
+              }
               // 게이트웨이 진입 경로에서 /api 한 단계를 떼고 다운스트림에 전달한다.
               // /api/echo -> /echo
               .stripPrefix(1)
@@ -65,6 +76,15 @@ class GatewayRouteConfig {
               // 만료된 토큰이면 refresh token 으로 갱신한 뒤 붙인다(TokenRelayConfig 참조).
               // 위에서 Authorization 을 이미 비웠으므로, 여기서 넣는 것만 downstream 에 도달한다.
               .tokenRelay()
+              // ── Phase 3: Circuit Breaker + Timeout ──────────────────────
+              // 다운스트림 호출을 CB 로 감싼다. 실패율이 임계치를 넘거나 타임아웃(timelimiter)이면
+              // 회로가 열려 이후 요청은 다운스트림에 가지 않고 즉시 fallback(/fallback/downstream, 503)
+              // 으로 간다 → 장애 시 게이트웨이가 매달리지 않는다. 설정은 application.yml 의
+              // resilience4j.circuitbreaker/timelimiter.instances.downstream.
+              .circuitBreaker { config ->
+                config.setName("downstream")
+                config.setFallbackUri("forward:/fallback/downstream")
+              }
           }.uri(demoUri)
       }.build()
 

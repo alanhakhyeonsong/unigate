@@ -83,6 +83,23 @@ class GatewaySecurityIntegrationTest {
   }
 
   @Test
+  fun `CB fallback 경로는 공개이며 503 Problem Detail 을 반환한다`() {
+    // CircuitBreaker 가 open/타임아웃 시 forward 하는 목적지. 직접 접근해도 인증 없이 503 을 준다.
+    // (CB 가 실제로 열려 여기로 흘러오는 것은 다운스트림을 죽인 브라우저 e2e 로 검증한다.)
+    client
+      .get()
+      .uri("/fallback/downstream")
+      .exchange()
+      .expectStatus()
+      .isEqualTo(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE)
+      .expectHeader()
+      .contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON)
+      .expectBody()
+      .jsonPath("$.reasonCode")
+      .isEqualTo("downstream_unavailable")
+  }
+
+  @Test
   fun `CSRF 토큰 없는 POST logout 은 403 으로 거부된다`() {
     // 로그아웃은 상태를 바꾸는 요청이라 CSRF 로 보호된다(SecurityConfig 의 logout 설정).
     // 토큰 없이 POST /logout 하면 CsrfWebFilter 가 라우팅 이전에 403 으로 막는다.
