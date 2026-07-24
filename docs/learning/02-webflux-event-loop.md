@@ -216,6 +216,16 @@ done; wait)
 2026-07-20T21:23:07.153+09:00  INFO 29336 --- [unigate] [tor-http-nio-11] m.r.u.a.gatewayIn.RequestLoggingFilter   : [post] GET /api/echo status=200 OK signal=onComplete elapsedMs=1622 thread=reactor-http-nio-11
 ```
 
+관찰:
+- **1.652초.** 직렬이었다면 45초다. 30건이 사실상 동시에 처리됐다.
+- 개별 요청의 `elapsedMs` 는 1603~1623 으로 **거의 균일**하다. 뒤에 처리된 요청이 앞의 요청을
+  기다린 흔적이 없다 — 30건이 큐에서 순서를 기다린 게 아니라 전부 동시에 떠 있었다는 뜻이다.
+- 다운스트림은 같은 30건을 받고 스레드를 `nio-8081-exec-1` ~ `30`, **30개**를 썼다.
+  게이트웨이는 15개로 끝냈다. 같은 실험 로그 안에 두 스레드 모델이 나란히 찍혔다.
+- 여기서 중요한 것은 "빠르다"가 아니라 **"스레드가 기다리지 않았다"** 는 사실이다.
+  1.5초 동안 게이트웨이의 15개 스레드는 놀고 있었고, 그래서 다른 요청을 받을 수 있는 상태였다.
+  확인 4 는 이 전제를 깨뜨렸을 때 무슨 일이 생기는지 보여준다.
+
 확인 2 — 스레드 수: 요청 30건을 몇 개의 스레드가 처리했는가?
 ```bash
 # 게이트웨이 로그에서 (실행 직후, 로그 flush 를 위해 잠깐 기다린 뒤)
@@ -303,7 +313,7 @@ $ grep -E '\[pre |\[post\]' gateway.log \
 그 스레드를 재사용한 **다른 요청의 값**이 읽힌다. 뒤엣것이 진짜 위험하다 — 에러가 나지 않고
 조용히 틀린 값을 쓰기 때문이다. (§5)
 
-> pre 가 왜 `parallel-*` 인지는 아직 답하지 못했다. §6 참조.
+> pre 가 왜 `parallel-*` 인지는 **확인 5 에서 규명했다.**
 
 확인 4 (선택, **주의**) — 이벤트 루프를 일부러 막아본다.
 필터의 pre 구간에 `Thread.sleep(3000)` 을 넣고 동시 요청 30건을 보내면 총 시간이 어떻게 되는가?
@@ -351,6 +361,107 @@ done; wait)
 | 최대 `elapsedMs` | 1623 | **3141** |
 
 관찰:
+- **9.149초.** 예측(6초)보다 **1.5배** 나빴다. 30 ÷ 15 = 2배치라는 산수가 맞지 않았다.
+- `[pre ]` 가 **15 / 14 / 1** 로 3파에 걸쳐 갈라졌다. 스케줄러가 30개 작업을 15개 스레드에
+  2개씩 균등 배분하지 않았다. 어떤 스레드는 3개를 받았고, 마지막 1건은 앞의 두 라운드를
+  모두 기다린 뒤에야 시작했다.
+- 다운스트림 로그가 결정적이다. 요청이 **`sleep` 이 끝난 뒤에야** 15/14/1 건씩 도착했다.
+  게이트웨이가 요청을 붙들고 있었다는 직접 증거다 — 다운스트림은 놀고 있었는데 지연은 3배가 됐다.
+- **가장 늦게 끝난 요청조차 `elapsedMs=3013` 이다.** 클라이언트는 9초를 기다렸는데 게이트웨이
+  내부 지표는 3초로 기록한다. 차이 6초는 전부 "스레드가 나기를 기다린 시간"이고, 필터의 타이머는
+  그 구간이 **끝난 뒤에** 시작한다.
+- 스레드 수는 확인 1 과 똑같이 15다. 블로킹은 스레드를 늘리지 않는다 — **점유할 뿐이다.**
+
+확인 5 ★ — **스레드 전환은 정확히 어디서 일어나는가** (확인 3 의 후속)
+
+확인 3 에서 pre 가 `parallel-*` 인 것은 알았지만 **어디서 바뀌는지**는 몰랐다.
+`WebFilter` 를 Security 체인 앞뒤와 체인 내부 여러 지점에 심어 좁혔다.
+
+```kotlin
+// 임시 진단 코드 (실험 후 삭제)
+@Component @Order(Ordered.HIGHEST_PRECEDENCE)   // Security 체인보다 바깥
+class OutermostThreadProbeFilter : WebFilter { /* 스레드 이름 로깅 */ }
+
+@Component @Order(Ordered.LOWEST_PRECEDENCE)    // Security 체인보다 안쪽
+class InnermostThreadProbeFilter : WebFilter { /* 스레드 이름 로깅 */ }
+
+// Security 체인 내부는 addFilterAt(probe, SecurityWebFiltersOrder.XXX) 로 심는다
+http.addFilterAt(ThreadProbe("SEC-FIRST"), SecurityWebFiltersOrder.FIRST)
+    .addFilterAt(ThreadProbe("SEC-SERVER_REQUEST_CACHE-앞"), SecurityWebFiltersOrder.SERVER_REQUEST_CACHE)
+    ...
+```
+
+세션 쿠키 없이 `GET /debug/session` 1건:
+
+```
+[A/최바깥 WebFilter]                  thread=reactor-http-nio-3
+[SEC-FIRST]                           thread=reactor-http-nio-3
+[SEC-REACTOR_CONTEXT-앞]              thread=reactor-http-nio-3
+[SEC-AUTHENTICATION-앞]               thread=reactor-http-nio-3
+[SEC-ANONYMOUS-앞]                    thread=reactor-http-nio-3
+[SEC-SECURITY_CONTEXT_EXCHANGE-앞]    thread=reactor-http-nio-3
+[SEC-SERVER_REQUEST_CACHE-앞]         thread=reactor-http-nio-3   ← 여기까지 Netty 루프
+[SEC-LOGOUT-앞]                       thread=parallel-4           ← 전환됨
+[SEC-EXCEPTION_TRANSLATION-앞]        thread=parallel-4
+[SEC-AUTHORIZATION-앞]                thread=parallel-4
+[SEC-LAST]                            thread=parallel-4
+[B/최안쪽 WebFilter]                  thread=parallel-4
+[B/post]                              thread=lettuce-nioEventLoop-5-2
+```
+
+**전환 주체는 `ServerRequestCacheWebFilter` 다.** 그 앞까지는 `reactor-http-nio-*`, 그 뒤부터 `parallel-*`.
+
+세션 쿠키를 **가진** 요청은 같은 지점에서 다른 스레드로 간다.
+
+```
+# 1차 (쿠키 없음) : [B/최안쪽] thread=parallel-6
+# 2차 (쿠키 있음) : [B/최안쪽] thread=lettuce-nioEventLoop-5-2
+```
+
+왜 그런지는 소스 세 곳으로 설명된다.
+
+```java
+// ① ServerRequestCacheWebFilter 가 부르는 것 — 캐시된 요청이 없어도 세션을 무조건 로드한다
+// spring-security-web / WebSessionServerRequestCache.java
+public Mono<ServerHttpRequest> removeMatchingRequest(ServerWebExchange exchange) {
+    ...
+    return exchange.getSession().map(WebSession::getAttributes).filter(...)
+}
+
+// ② 새 세션을 만드는 경로 — publishOn(parallel) 이 명시돼 있다
+// spring-web / InMemoryWebSessionStore.java
+return Mono.<WebSession>fromSupplier(() -> new InMemoryWebSession(now))
+        .subscribeOn(Schedulers.boundedElastic())
+        .publishOn(Schedulers.parallel());
+
+// ③ Spring Session + Redis 도 같은 패턴
+// spring-session-data-redis / ReactiveRedisSessionRepository.java
+public Mono<RedisSession> createSession() {
+    return Mono.fromSupplier(() -> this.sessionIdGenerator.generate())
+            .subscribeOn(Schedulers.boundedElastic())
+            .publishOn(Schedulers.parallel())
+            ...
+}
+// 반면 findById() 에는 Schedulers 호출이 없다 → Lettuce 가 응답을 받은 스레드에서 그대로 이어진다
+```
+
+대조 실험으로 확인 사살했다. Spring Session 자체를 끄고
+(`--spring.autoconfigure.exclude=...session.SessionAutoConfiguration`) 같은 요청을 보내도
+**여전히 `parallel-*`** 이었다. Redis 때문이 아니라 **세션 생성 경로 자체**가 원인이다.
+
+정리:
+
+| 요청 | 세션 처리 | 이후 스레드 |
+|---|---|---|
+| 쿠키 없음 (신규) | `createSession()` → `publishOn(Schedulers.parallel())` | `parallel-*` |
+| 쿠키 있음 (복원) | `findById()` → Lettuce 가 응답 수신 | `lettuce-nioEventLoop-*` |
+
+> **왜 `boundedElastic` 을 거치는가**: 세션 ID 생성은 `SecureRandom` 을 쓴다. 엔트로피 상황에 따라
+> 블로킹될 수 있는 작업이라 이벤트 루프에서 떼어낸 것으로 보인다. 그 결과를 다시 이벤트 루프로
+> 되돌리지 않고 `parallel` 로 흘려보내기 때문에, **이후 요청 처리 전체가 이벤트 루프를 떠난다.**
+>
+> 확인 1·3 에서 `[pre ]` 가 예외 없이 30건 모두 `parallel-*` 이었던 이유가 이것이다.
+> curl 은 쿠키를 보내지 않으므로 매 요청이 "신규 세션 생성" 경로를 탔다.
 
 ## 5. 함정 / 실패 모드
 
@@ -391,10 +502,43 @@ done; wait)
 
 > ✍️ **직접 작성하는 섹션.**
 
-- [ ] 관찰된 사실: `[pre ]` 는 `parallel-*` 스레드, `[post]` 는 `reactor-http-nio-*` 스레드에서 찍혔다.
-      Netty 이벤트 루프(`reactor-http-nio-*`)에서 시작한 요청이 왜 `GlobalFilter` 진입 시점엔
-      `parallel-*`(Reactor 공용 병렬 스케줄러)로 옮겨가 있는가? 어느 구성요소가 스케줄러를 바꾸는가?
-      → 조사 방법: `GlobalFilter` 앞단에 `WebFilter` 를 하나 두고 거기서도 스레드 이름을 찍어,
-        전환 지점이 WebFilter 체인 이전인지 이후(`FilteringWebHandler`)인지 좁힌다.
-- [ ] `Schedulers.boundedElastic()` 은 몇 개까지 늘어나는가? 그 한계에 걸리면 어떤 증상이 나는가?
-- [ ]
+### 이번에 답이 나온 것
+
+- [x] **어느 구성요소가 스케줄러를 바꾸는가?**
+      → **Security 체인의 `ServerRequestCacheWebFilter`.** 이것이 `exchange.getSession()` 을
+      무조건 호출하고, 세션 스토어의 **신규 생성 경로**가 `publishOn(Schedulers.parallel())` 를 건다.
+      Spring Session 을 꺼도 동일하다(인메모리 스토어도 같은 패턴). 실측·소스 근거는 §4 확인 5.
+
+- [x] **`Schedulers.boundedElastic()` 은 몇 개까지 늘어나는가? 한계에 걸리면 어떤 증상인가?**
+      → Reactor 소스(`reactor-core` `Schedulers.java`)에 상수로 박혀 있다.
+
+      ```java
+      public static final int DEFAULT_BOUNDED_ELASTIC_SIZE =
+              Optional.ofNullable(System.getProperty("reactor.schedulers.defaultBoundedElasticSize"))
+                      .map(Integer::parseInt)
+                      .orElseGet(() -> 10 * Runtime.getRuntime().availableProcessors());
+
+      public static final int DEFAULT_BOUNDED_ELASTIC_QUEUESIZE =
+              Optional.ofNullable(System.getProperty("reactor.schedulers.defaultBoundedElasticQueueSize"))
+                      .map(Integer::parseInt)
+                      .orElse(100000);
+      ```
+
+      | | 값 | 이 머신 기준 |
+      |---|---|---|
+      | 스레드 상한 | `10 × CPU 코어` | 15코어 → **150** |
+      | 스레드당 큐 상한 | `100000` | 100000 |
+
+      스레드가 전부 차면 작업은 큐에 쌓이고, **큐까지 넘치면 `RejectedExecutionException`** 이 난다.
+      이벤트 루프(15)보다 10배 여유가 있지만 **무한이 아니다.** "블로킹은 `boundedElastic` 으로
+      보내면 된다"가 공짜가 아닌 이유다 — 이름 그대로 bounded 다.
+
+      두 스케줄러의 성격이 다르다는 점이 중요하다.
+
+      | | `parallel()` | `boundedElastic()` |
+      |---|---|---|
+      | 크기 | CPU 코어 수 | 10 × 코어 |
+      | 용도 | **논블로킹** 연산 (`timeout`, `delay`) | **블로킹** 작업 격리 |
+      | 여기서 막으면 | 확인 4 의 증상 (전역 지연) | 큐 적체 → 최종적으로 예외 |
+
+### 아직 모르는 것

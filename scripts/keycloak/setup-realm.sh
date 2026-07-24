@@ -403,18 +403,27 @@ if [[ "$CREATE_TEST_USERS" == "true" ]]; then
   fi
 
   # upsert_user <username> <email> <group-uuid | "">
+  #
+  # firstName/lastName 을 **둘 다** 채운다. Keycloak 의 declarative user profile 은 기본적으로
+  # 두 항목을 required 로 두기 때문에, 하나라도 비면 로그인 마지막 단계에서
+  # VERIFY_PROFILE("Update Account Information") 화면이 끼어들어 Authorization Code Flow 가
+  # 콜백까지 도달하지 못한다. 자동화 검증이 조용히 막히는 지점이다.
   upsert_user() {
     local username="$1" email="$2" group_uuid="$3" uuid
+    local profile
+    profile="$(jq -n --arg u "$username" --arg e "$email" \
+      '{username: $u, email: $e, emailVerified: true, enabled: true, firstName: $u, lastName: "tester"}')"
     uuid=$(api GET "/admin/realms/$REALM/users?username=$username&exact=true" | jq -r '.[0].id // empty')
 
     if [[ -z "$uuid" ]]; then
-      api POST "/admin/realms/$REALM/users" \
-        "$(jq -n --arg u "$username" --arg e "$email" \
-           '{username: $u, email: $e, emailVerified: true, enabled: true, firstName: $u}')" >/dev/null
+      api POST "/admin/realms/$REALM/users" "$profile" >/dev/null
       uuid=$(api GET "/admin/realms/$REALM/users?username=$username&exact=true" | jq -r '.[0].id')
       ok "user '$username' 생성"
     else
-      ok "user '$username' 존재"
+      # 이미 있는 사용자도 프로필을 맞춘다. 예전 버전이 만든 계정은 lastName 이 비어 있어
+      # 재실행만으로는 고쳐지지 않는다("존재"로 건너뛰므로).
+      api PUT "/admin/realms/$REALM/users/$uuid" "$profile" >/dev/null
+      ok "user '$username' 존재 — 프로필 갱신"
     fi
 
     # temporary=false — true 면 첫 로그인에서 비밀번호 변경 화면이 떠 자동화가 막힌다.

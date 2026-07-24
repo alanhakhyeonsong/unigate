@@ -166,6 +166,14 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/nope
 ```
 
 관찰:
+- 다운스트림까지 가지 않는다. `/nope` 는 게이트웨이가 직접 404 를 냈고 다운스트림 로그에는 아무것도 남지 않았다.
+- **`[pre ]` 조차 없다.** `RequestLoggingFilter` 는 `GlobalFilter` 라 라우트에 매칭된 요청만 본다.
+  매칭 실패 요청은 SCG 필터 체인에 진입조차 하지 않는다.
+- 기본 로그 레벨(INFO)에서는 **양쪽 모두 완전한 무음**이었다. 로그 레벨을 DEBUG 로 올려야
+  비로소 `NoResourceFoundException` 이 보인다. 원인이 둘 겹쳐 있다 — ① GlobalFilter 미도달
+  ② 4xx 가 DEBUG 레벨(§5).
+- 404 를 만든 주체는 `RoutePredicateHandlerMapping` 이 아니라 **정적 리소스 핸들러**다.
+  `"No static resource nope."` 는 정적 파일 설정이 아니라 **"아무 핸들러도 이 요청을 맡지 않았다"** 는 뜻이다.
 
 확인 3 — 다운스트림을 **끄고** 같은 요청을 보내면?
 관찰 포인트: 어떤 상태코드가 나오는가? 이 응답은 누가 만든 것인가?
@@ -218,6 +226,16 @@ Caused by: java.net.ConnectException: Connection refused
 ```
 
 관찰:
+- **500 이 나왔다.** 다운스트림만 죽었는데 게이트웨이 자신의 버그를 뜻하는 코드가 나간다.
+  이 응답을 만든 것은 SCG 가 아니라 WebFlux 범용 핸들러(`AbstractErrorWebExceptionHandler`)다.
+  SCG 는 `ConnectException` 을 매핑하지 않아 예외가 그대로 위로 올라갔다.
+- **`.doFinally` 를 쓴 판단이 여기서 증명됐다.** 종결 시그널이 `signal=onError` 인데도 post 로그가 남았다.
+  `.then()` 이었다면 이 줄이 통째로 사라져 "pre 는 있는데 끝난 흔적이 없는" 로그가 됐을 것이다.
+- 시각 순서가 중요하다. 에러 핸들러의 ERROR 로그(`.530`)가 post(`.534`)보다 **먼저** 찍혔다.
+  응답이 커밋된 뒤에 `doFinally` 가 돌았기 때문에 `status=500` 이 제대로 기록됐다.
+  순서가 반대였다면 `status=null` 이다.
+- 스택트레이스의 `*__checkpoint` 목록이 **필터 층의 순서를 그대로 보여준다.** 안쪽부터 나열되므로
+  실행 순서는 아래에서 위로 읽는다. Security 체인이 SCG 보다 바깥에 있다는 §3 의 근거다.
 
 확인 4 — `DownstreamErrorMappingFilter` 도입 **후**, 같은 조건으로 다시
 ```bash
@@ -271,7 +289,27 @@ Caused by: java.net.ConnectException: Connection refused
 2026-07-20T21:30:28.203+09:00 DEBUG 29336 --- [unigate] [    parallel-10] a.w.r.e.AbstractErrorWebExceptionHandler : [57182611-38] Resolved [NoResourceFoundException: 404 NOT_FOUND "No static resource nope."] for HTTP GET /nope
 ```
 
-관찰:
+관찰 — 확인 3 과 항목별로 대조하면:
+
+| | 확인 3 (도입 전) | 확인 4 (도입 후) |
+|---|---|---|
+| 상태코드 | `500 Internal Server Error` | **`502 Bad Gateway`** |
+| 원인 로그 레벨 | `ERROR` (프레임워크가 남김) | `WARN` (**필터가 직접 남김**) |
+| 스택트레이스 | 있음 | 있음 (원인 예외를 함께 넘긴 결과) |
+| `[post]` 의 status | `500 INTERNAL_SERVER_ERROR` | `502 BAD_GATEWAY` |
+| `/nope` | `404` | `404` (회귀 없음) |
+
+1. 상태코드가 502 로 바뀌었고 본문의 `error` 도 `"Bad Gateway"` 다. 이제 온콜은 게이트웨이가 아니라
+   다운스트림을 본다.
+2. **원인 로그가 살아남았다.** 이게 핵심이다. `ResponseStatusException` 으로 바꾸는 순간 Spring 은
+   이를 "의도된 응답"으로 보고 `DEBUG` 로 낮춘다(로그의 `Resolved [ResponseStatusException: 502 ...]`
+   줄이 DEBUG 인 것을 보라). 필터가 직접 `WARN` 을 남기지 않았다면 **상태코드는 정확해지고 원인은
+   사라지는** 상태가 됐을 것이다.
+3. `[post]` 는 **변환된 값**(502)을 본다. `RequestLoggingFilter` 가 `DownstreamErrorMappingFilter` 보다
+   바깥(`HIGHEST_PRECEDENCE` vs `+1`)이라, 안쪽에서 변환된 결과가 바깥의 관찰 필터에 도달한다.
+   순서가 반대였다면 관찰 필터는 원래 예외를 보고 500 으로 기록했을 것이다.
+4. `/nope` 은 그대로 404 다. 예외 변환 방식을 고른 이유 — **기존에 잘 도는 경로를 건드리지 않는다** —
+   가 지켜졌다. 커스텀 `ErrorWebExceptionHandler` 였다면 이 경로까지 떠안았어야 한다.
 
 ## 5. 함정 / 실패 모드
 
@@ -349,23 +387,82 @@ Caused by: java.net.ConnectException: Connection refused
       **"이 예외가 무슨 뜻인가" 하나뿐**이라 변환이 더 작고 회귀 위험이 낮다. 핸들러를 직접
       구현하면 404·인증 실패 등 지금 잘 도는 경로까지 떠안는다.
       응답 본문 형식을 게이트웨이 표준으로 통일해야 할 때 비로소 핸들러가 필요해진다.
-- [ ] **`pre` 는 왜 `parallel-*` 인가?**
-      확인 1(200)·확인 3(500) 은 물론, **라우트 매칭조차 못 한 확인 2(404)의 에러 핸들러도
-      `parallel-3`** 이었다. 즉 스케줄러 전환은 SCG 필터 체인이 아니라 **그 앞의 `WebFilter` 층**
-      에서 일어난다. 어느 `WebFilter` 인지가 남았다.
-      → `02-webflux-event-loop.md` §6 과 **같은 사안**이다. 조사 방법도 거기에 있다.
+- [x] **`pre` 는 왜 `parallel-*` 인가?** → **답: Security 체인의 `ServerRequestCacheWebFilter` 다.**
+      `WebFilter` 를 Security 체인 앞뒤 + 체인 내부 7개 지점에 심어 좁혔다.
+      `ServerRequestCacheWebFilter` 직전까지는 `reactor-http-nio-*`, 그 다음 필터부터 `parallel-*` 이다.
+      원인은 이 필터가 호출하는 `exchange.getSession()` 이고, 세션 스토어의 **새 세션 생성 경로**가
+      `publishOn(Schedulers.parallel())` 를 명시적으로 건다.
+      전체 실측과 소스 근거는 [02](02-webflux-event-loop.md) §4 확인 5 참조.
 - [ ] **`GlobalFilter` 와 `GatewayFilter` 의 실행 순서는 어떻게 정해지는가?** (`Ordered`)
       `RequestLoggingFilter` 는 `HIGHEST_PRECEDENCE` 를 줬는데, 라우트별 `GatewayFilter` 와
       섞였을 때 어떤 순서가 되는가?
-- [ ] **전수 접근 로그를 `WebFilter` 로 만든다면 어디에 둬야 하는가?**
-      Security 체인보다 앞인가 뒤인가. 앞이면 인증 실패 요청도 찍히지만, 그 시점엔 아직
-      사용자 식별 정보가 없다.
-- [ ] **읽기/응답 타임아웃은 어떤 예외로 오는가?**
-      `DownstreamErrorMappingFilter` 는 지금 **연결 계열(`ConnectException`)만** 매핑한다.
-      다운스트림이 살아 있으면서 **응답만 늦는** 경우는 아직 재현해보지 않았다.
-      → 재현 방법: 샘플 BE 에 의도적으로 지연되는 엔드포인트를 두고,
-        `spring.cloud.gateway.httpclient.response-timeout` 을 짧게 준 뒤 어떤 예외가 오는지 확인한다.
-        (`ReadTimeoutException` 인가 `TimeoutException` 인가 → 504 매핑 추가)
+- [x] **전수 접근 로그를 `WebFilter` 로 만든다면 어디에 둬야 하는가?**
+      → **답: 앞뒤 둘 다 필요하다. 하나로는 안 된다.**
+
+      스레드 전환 실험(위 첫 항목)에서 `WebFilter` 를 Security 앞(`HIGHEST_PRECEDENCE`)과
+      뒤(`LOWEST_PRECEDENCE`)에 각각 두고 미인증 요청을 보냈더니 이렇게 갈렸다.
+
+      ```
+      # 세션 쿠키 없이 GET /api/echo (→ 302 로그인 리다이렉트)
+      [A/최바깥 WebFilter] /api/echo thread=reactor-http-nio-4
+      (B/최안쪽 WebFilter 는 한 줄도 없음)
+      ```
+
+      Security 가 302 로 끊었기 때문에 안쪽 필터까지 요청이 도달하지 않는다. 즉
+      - **앞(A)**: 인증 실패·라우트 미매칭 포함 **모든 요청**을 본다. 대신 그 시점엔 사용자 식별 정보가 없다.
+      - **뒤(B)**: 인증된 요청만 본다. 대신 principal 을 붙일 수 있다.
+
+      "인증은 라우팅보다 먼저 결정된다"(§3)가 로그 설계에도 그대로 적용된다.
+      감사 로그(누가)와 접근 로그(무엇이 들어왔나)는 **같은 필터로 만들 수 없다.**
+- [x] **읽기/응답 타임아웃은 어떤 예외로 오는가?**
+      → **답: `TimeoutException` 이고, 우리가 매핑할 필요가 없다. SCG 가 이미 504 로 바꾼다.**
+
+      재현: `--spring.cloud.gateway.server.webflux.httpclient.response-timeout=1s` 로 기동하고
+      다운스트림을 3초 지연시켰다.
+
+      ```
+      $ curl -s -b <쿠키> -w '  status=%{http_code}  time=%{time_total}s\n' 'localhost:8080/api/echo?delayMs=3000'
+        status=504  time=1.033065s
+      {"timestamp":"...","path":"/api/echo","status":504,"error":"Gateway Timeout","requestId":"ed8ad2dc-4"}
+
+      # 대조: 지연 없음
+        status=200  time=0.014164s
+      ```
+      ```
+      DEBUG ... Resolved [ResponseStatusException: 504 GATEWAY_TIMEOUT "Response took longer than timeout: PT1S"]
+      INFO  ... [post] GET /api/echo status=504 GATEWAY_TIMEOUT signal=onError elapsedMs=1024 thread=parallel-5
+      ```
+
+      **`DownstreamErrorMappingFilter` 의 `WARN` 이 한 줄도 없다.** 우리 필터를 거치긴 했지만
+      `ConnectTimeoutException`/`ConnectException` 이 아니라 `else -> error` 로 그대로 통과시켰다.
+      504 는 SCG 가 만든 것이다 — `NettyRoutingFilter` 소스에 그대로 있다.
+
+      ```java
+      // spring-cloud-gateway-server / NettyRoutingFilter.java
+      Duration responseTimeout = getResponseTimeout(route);
+      if (responseTimeout != null) {
+          responseFlux = responseFlux
+              .timeout(responseTimeout,
+                      Mono.defer(() -> Mono.error(
+                          new TimeoutException("Response took longer than timeout: " + responseTimeout))))
+              .onErrorMap(TimeoutException.class,
+                      th -> new ResponseStatusException(HttpStatus.GATEWAY_TIMEOUT, th.getMessage(), th));
+      }
+      ```
+
+      정리하면 **두 종류의 타임아웃을 서로 다른 주체가 처리한다.**
+
+      | 타임아웃 | 예외 | 누가 504 로 만드나 |
+      |---|---|---|
+      | 연결(connect) | `ConnectTimeoutException` | **우리 필터** (SCG 는 매핑하지 않음) |
+      | 응답(response) | `TimeoutException` | **SCG `NettyRoutingFilter`** |
+
+      부수 관찰 둘:
+      - `[post]` 스레드가 `parallel-5` 다. 정상 요청은 `reactor-http-nio-*` 였다.
+        Reactor 의 `.timeout()` 연산자가 `Schedulers.parallel()` 을 쓰기 때문이다.
+      - **프로퍼티 경로가 바뀌었다.** 기동 로그에 경고가 뜬다 —
+        `spring.cloud.gateway.httpclient.*` → `spring.cloud.gateway.server.webflux.httpclient.*`
+        (SCG 4.3 / Spring Cloud 2025.0). 옛 경로를 쓰면 조용히 무시된다.
 - [ ] **`circuitBreaker` 를 언제 도입할 것인가?**
       상태코드 정정(완료)과 **장애 전파 차단**은 다른 문제다. 다운스트림이 계속 죽어 있을 때
       매 요청이 연결 시도로 40ms 씩 소모하는 것을 언제부터 막아야 하는가.
