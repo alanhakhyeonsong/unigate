@@ -18,6 +18,7 @@
 | [06](06-gateway-trust-boundary-header-forgery.md) | 게이트웨이 신뢰 경계와 헤더 위조 방어 | 1 | 학습중 | 인입 Authorization 은 **무조건 제거** 후 재주입. "제거"와 "덮어쓰기"는 다른 연산이다 |
 | [07](07-downstream-resource-server-audience.md) | 다운스트림 Resource Server 와 aud 검증 | 1 | 학습중 | Resource Server 는 기본적으로 `aud` 를 안 본다. 안 끼우면 같은 realm 의 아무 토큰이나 통과한다 |
 | [08](08-offline-integration-test-bff-gateway.md) | BFF 게이트웨이 오프라인 통합 테스트 | 1 | 학습중 | issuer-uri·DB·Redis 때문에 그냥은 부팅도 안 된다. 정적 endpoint + autoconfigure 제외로 외부의존 0 |
+| [09](09-rp-initiated-logout-session-invalidation.md) | RP-Initiated Logout 과 세션 무효화 함정 | 1.5 | 학습중 | 게이트웨이 세션만 지우면 자동 재로그인된다. Keycloak end_session 까지. 단 Spring Session invalidate 는 500 |
 
 상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
 

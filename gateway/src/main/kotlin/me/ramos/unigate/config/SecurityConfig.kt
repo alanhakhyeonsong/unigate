@@ -6,6 +6,7 @@ import org.springframework.core.env.Environment
 import org.springframework.security.config.annotation.web.reactive.EnableWebFluxSecurity
 import org.springframework.security.config.web.server.ServerHttpSecurity
 import org.springframework.security.oauth2.client.InMemoryReactiveOAuth2AuthorizedClientService
+import org.springframework.security.oauth2.client.oidc.web.server.logout.OidcClientInitiatedServerLogoutSuccessHandler
 import org.springframework.security.oauth2.client.registration.ReactiveClientRegistrationRepository
 import org.springframework.security.oauth2.client.web.DefaultOAuth2AuthorizationRequestResolver
 import org.springframework.security.oauth2.client.web.OAuth2AuthorizationRequestCustomizers
@@ -15,6 +16,10 @@ import org.springframework.security.oauth2.client.web.server.ServerOAuth2Authori
 import org.springframework.security.oauth2.client.web.server.ServerOAuth2AuthorizedClientRepository
 import org.springframework.security.oauth2.client.web.server.WebSessionServerOAuth2AuthorizedClientRepository
 import org.springframework.security.web.server.SecurityWebFilterChain
+import org.springframework.security.web.server.authentication.logout.DelegatingServerLogoutHandler
+import org.springframework.security.web.server.authentication.logout.SecurityContextServerLogoutHandler
+import org.springframework.security.web.server.authentication.logout.ServerLogoutHandler
+import org.springframework.security.web.server.authentication.logout.ServerLogoutSuccessHandler
 
 /**
  * 게이트웨이 인증 정책 — Authorization Code Flow (BFF).
@@ -35,6 +40,8 @@ class SecurityConfig(
   fun securityWebFilterChain(
     http: ServerHttpSecurity,
     authorizationRequestResolver: ServerOAuth2AuthorizationRequestResolver,
+    clientRegistrationRepository: ReactiveClientRegistrationRepository,
+    authorizedClientRepository: ServerOAuth2AuthorizedClientRepository,
   ): SecurityWebFilterChain =
     http
       .authorizeExchange { exchanges ->
@@ -56,6 +63,38 @@ class SecurityConfig(
       }.oauth2Login { oauth2 ->
         // PKCE 를 쓰기 위해 resolver 를 명시적으로 갈아끼운다. 이유는 아래 빈 주석 참조.
         oauth2.authorizationRequestResolver(authorizationRequestResolver)
+      }.logout { logout ->
+        // ── Phase 1.5: RP-Initiated Logout ──────────────────────────────
+        // 기본 로그아웃 엔드포인트는 POST /logout (CSRF 보호됨).
+        //
+        // (1) logoutHandler — 게이트웨이 세션에서 **민감 내용을 폐기**한다:
+        //   ① SecurityContext 제거(→ 미인증화)  ② OAuth2AuthorizedClient 제거(→ access/refresh
+        //   token 폐기). 둘 다 세션 **업데이트**다(무효화 아님).
+        //
+        //   ⚠️ 왜 세션을 invalidate() 하지 않는가 (겪은 실패):
+        //   Spring Session(reactive Redis)은 요청 종료 시 세션을 **자동 저장**한다. 그런데
+        //   WebSessionServerLogoutHandler 로 세션을 invalidate() 하면, 그 자동 저장이
+        //   "무효화된 세션을 save" 하려다 `IllegalStateException: Session was invalidated` 로 터진다
+        //   (ReactiveRedisSessionRepository.save → POST /logout 이 500).
+        //   그래서 무효화 대신 민감 attribute 만 제거해 충돌을 피한다. 남는 빈 세션은 TTL 로 만료된다.
+        logout.logoutHandler(
+          DelegatingServerLogoutHandler(
+            SecurityContextServerLogoutHandler(),
+            ServerLogoutHandler { exchange, authentication ->
+              authorizedClientRepository.removeAuthorizedClient(
+                KEYCLOAK_REGISTRATION_ID,
+                authentication,
+                exchange.exchange,
+              )
+            },
+          ),
+        )
+        // (2) logoutSuccessHandler — Keycloak 쪽 세션도 끝낸다.
+        //   게이트웨이 세션만 지우면 Keycloak SSO 쿠키(KEYCLOAK_IDENTITY)가 살아 있어,
+        //   다음 보호 리소스 접근 시 authorization code 흐름이 **비밀번호 없이 자동 완료**된다.
+        //   → 사용자 체감은 "로그아웃이 안 된" 상태. end_session_endpoint 로 리다이렉트해
+        //   Keycloak 세션까지 종료해야 진짜 로그아웃이다. (OIDC RP-Initiated Logout)
+        logout.logoutSuccessHandler(oidcLogoutSuccessHandler(clientRegistrationRepository))
       }
       // CSRF 는 **기본값(활성)** 으로 되돌렸다. 이전 단계의 `.csrf { it.disable() }` 는
       // 인증이 없던 시기의 임시 조치였다. 세션 쿠키로 인증하는 순간 브라우저는 교차 사이트
@@ -96,6 +135,27 @@ class SecurityConfig(
     }
 
   /**
+   * RP-Initiated Logout 성공 처리기.
+   *
+   * 로그아웃 후 사용자를 Keycloak 의 `end_session_endpoint` 로 리다이렉트한다. 이때
+   * `id_token_hint`(어느 세션을 끝낼지)와 `post_logout_redirect_uri`(끝난 뒤 돌아올 곳)를 붙인다.
+   *
+   * - `end_session_endpoint` 는 **discovery 메타데이터**에서 온다(issuer-uri 로 부팅 시 조회).
+   *   따라서 이 핸들러가 실제로 Keycloak 으로 보내려면 discovery 가 살아 있어야 한다. discovery 없이
+   *   정적 엔드포인트만 준 환경(테스트 프로파일)에서는 메타데이터가 없어 Keycloak 왕복 없이
+   *   곧장 post-logout URI 로만 리다이렉트한다. (그래서 RP 왕복은 브라우저 e2e 로 검증한다.)
+   * - `{baseUrl}` 은 게이트웨이 자신의 베이스 URL(`http://localhost:8080`)로 치환된다. 뒤에 `/` 를
+   *   붙여 Keycloak client 에 등록된 post-logout redirect URI(`http://localhost:8080/`)와 정확히 맞춘다.
+   *   불일치하면 Keycloak 이 `invalid_redirect_uri` 로 거절한다(KEYCLOAK_REALM_SETUP.md §4.1).
+   */
+  private fun oidcLogoutSuccessHandler(
+    clientRegistrationRepository: ReactiveClientRegistrationRepository,
+  ): ServerLogoutSuccessHandler =
+    OidcClientInitiatedServerLogoutSuccessHandler(clientRegistrationRepository).apply {
+      setPostLogoutRedirectUri("{baseUrl}/")
+    }
+
+  /**
    * 발급받은 토큰(access/refresh)을 **세션(= Valkey)** 에 저장한다.
    *
    * 이 빈이 없으면 Spring Security 는 [AuthenticatedPrincipalServerOAuth2AuthorizedClientRepository] 를
@@ -121,6 +181,9 @@ class SecurityConfig(
 
   companion object {
     private const val LOCAL_PROFILE = "local"
+
+    /** `application-*.yml` 의 `spring.security.oauth2.client.registration.<이 이름>` 과 일치해야 한다. */
+    private const val KEYCLOAK_REGISTRATION_ID = "keycloak"
 
     /**
      * 인증 없이 열어두는 경로.
