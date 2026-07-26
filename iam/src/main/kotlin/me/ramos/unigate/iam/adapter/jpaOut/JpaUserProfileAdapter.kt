@@ -35,6 +35,8 @@ class JpaUserProfileAdapter(
 
   override fun findByEmail(email: String): UserProfile? = repository.findByEmail(email)?.toModel()
 
+  override fun findByUserRef(userRef: UserRef): UserProfile? = repository.findByUserRef(userRef.value)?.toModel()
+
   // ── 매핑 ──────────────────────────────────────────────────────────────────
 
   private fun UserProfileEntity.applyFrom(profile: UserProfile) {

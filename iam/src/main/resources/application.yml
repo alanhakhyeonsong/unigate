@@ -23,6 +23,14 @@ spring:
     url: ${IAM_DATASOURCE_URL:jdbc:postgresql://127.0.0.1:3000/unigate_iam}
     username: ${IAM_DATASOURCE_USERNAME:testuser}
     password: ${IAM_DATASOURCE_PASSWORD:testpass}
+  # ── RFC 9457 Problem Detail (Phase 8e) ─────────────────────────────────
+  # 켜지 않으면 검증 실패(400)·미지원 메서드(405) 등이 Spring 기본 에러 본문으로 나가,
+  # 컨트롤러가 직접 만드는 ProblemDetail(409 등)·보안 핸들러(401/403)와 형식이 갈린다.
+  # gateway 의 `spring.webflux.problemdetails.enabled` 와 짝이 되는 MVC 쪽 설정이다.
+  mvc:
+    problemdetails:
+      enabled: true
+
   jpa:
     hibernate:
       # 스키마는 Flyway 가 소유한다. Hibernate 가 손대면 마이그레이션과 이중 관리가 된다.
@@ -64,6 +72,13 @@ unigate:
     # IAM 이며, IAM 의 client 이름이 `unigate-iam` 이다. audience 전용 client 를 따로 만들지 않는다.
     security:
       expected-audience: ${IAM_EXPECTED_AUDIENCE:unigate-iam}
+
+    # ── 약관 정책 (Phase 8e) ────────────────────────────────────────────────
+    # 이 값을 올리면 **기존 동의가 일제히 무효**가 되고 사용자에게 재동의를 받아야 한다
+    # (ConsentRecord 는 버전과 시각을 함께 보관한다). 인프라 설정이 아니라 비즈니스 결정이므로
+    # 배포 때 무심코 바꾸지 않도록 이름을 분명히 둔다.
+    consent:
+      current-tos-version: ${IAM_CURRENT_TOS_VERSION:v1}
 
 server:
   shutdown: graceful
