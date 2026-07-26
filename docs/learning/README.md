@@ -22,6 +22,8 @@
 | [10](10-jwks-local-verification.md) | JWKS 로컬 검증 (introspection 배제) | 2 | 학습중 | 공개키를 캐시하고 로컬 서명검증. kid 미스 시만 재조회. reactive 디코더 예외 문구가 servlet 과 다름 |
 | [11](11-resilience-ratelimit-circuitbreaker.md) | Resilience — 토큰버킷 rate limit + Circuit Breaker | 3 | 학습중 | Redis 토큰버킷으로 429, CB+Timeout 으로 장애 fast-fail(503). 2000ms→10ms 로 회로 열림 관찰 |
 | [12](12-observability-audit-r2dbc.md) | 관측성 + 감사로그 (R2DBC 첫 사용) | 4 | 학습중 | R2DBC 엔 영속성 컨텍스트가 없어 명시 INSERT + 논블로킹. WebFlux 는 인증 이벤트 미발행 → 커스텀 핸들러 |
+| [13](13-distributed-tracing-reactor-context.md) | 분산 트레이싱 — traceparent 전파와 Reactor 컨텍스트 | 4 | 학습중 | SCG 가 traceparent 를 자동 주입. 단 `mono { }` 안에서 읽은 traceId 는 **항상 null** — 복원은 Reactor 연산자 경계까지다 |
+| [14](14-problem-detail-xhr-auth-boundary.md) | RFC 9457 Problem Detail 과 XHR 인증 경계 | 4 | 학습중 | 미인증에 무조건 302 를 주면 SPA 에선 CORS 에러로 둔갑. `Sec-Fetch-Mode` 로 갈라 401 + loginUrl |
 
 상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
 
@@ -37,7 +39,9 @@
 - [x] **Spring Cloud Gateway 필터 체인** → [01](01-scg-route-and-filter-chain.md)
 - [x] **WebFlux 이벤트 루프** → [02](02-webflux-event-loop.md)
 - [ ] **Kotlin Coroutine `suspend`** — 스레드가 아니라 연속(continuation)을 중단·재개한다는 것
-- [ ] **Reactor ↔ Coroutine 경계** — `mono { }`, `awaitBody()` 를 언제 어디에 쓰는가
+- [~] **Reactor ↔ Coroutine 경계** — `mono { }`, `awaitBody()` 를 언제 어디에 쓰는가.
+      **컨텍스트 전파 측면은 [13](13-distributed-tracing-reactor-context.md) §5 에서 실패를 겪으며 다뤘다**
+      (`mono { }` 안에서는 ThreadLocal 이 복원되지 않는다). 그 외 사용 지침은 아직 미정리.
 - [x] **OAuth2 Authorization Code + BFF** → [04](04-oauth2-authorization-code-bff.md)
 - [x] **TokenRelay** — 세션의 토큰을 다운스트림으로, 만료 시 refresh → [05](05-token-relay.md)
 - [x] **Spring Session + Valkey(Reactive)** → [03](03-spring-session-valkey-reactive.md)
@@ -53,6 +57,8 @@
 - [x] **R2DBC vs JPA** — 지연로딩·더티체킹·영속성 컨텍스트가 없다는 것의 실제 영향 → [12](12-observability-audit-r2dbc.md)
 - [ ] **Reactive 트랜잭션** — `@Transactional` 이 왜 그대로 동작하지 않는가
 - [x] **Resilience4j (reactive)** — Circuit Breaker · Bulkhead · Timeout 의 상호작용 → [11](11-resilience-ratelimit-circuitbreaker.md)
+- [x] **분산 트레이싱 · Reactor 컨텍스트 전파** → [13](13-distributed-tracing-reactor-context.md)
+- [x] **RFC 9457 Problem Detail · XHR 인증 경계** → [14](14-problem-detail-xhr-auth-boundary.md)
 
 ### 참고 (직접 쓰지는 않지만 이해가 필요한 것)
 

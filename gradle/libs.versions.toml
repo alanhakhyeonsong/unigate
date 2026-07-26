@@ -51,6 +51,17 @@ flyway-postgresql = { module = "org.flywaydb:flyway-database-postgresql", versio
 # --- Observability ---
 spring-boot-starter-actuator = { module = "org.springframework.boot:spring-boot-starter-actuator", version.ref = "spring-boot" }
 micrometer-registry-prometheus = { module = "io.micrometer:micrometer-registry-prometheus" }
+# 분산 트레이싱(Phase 4). 버전은 Boot BOM(micrometer-tracing-bom)이 관리한다.
+#
+# Brave 가 아니라 OTel 브리지를 고른 이유는 **전파 형식이 아니다.** Boot 3.5 는
+# `management.tracing.propagation.produce` 기본값이 `[W3C]` 라 브리지와 무관하게 traceparent 를 쓴다
+# (spring-boot-actuator-autoconfigure-3.5.4 메타데이터에서 확인). 실제 선택 근거는 수집 쪽이다:
+# OTel 은 벤더 중립이라 Phase 6 에서 OTLP exporter 한 줄로 collector/Jaeger/Tempo 에 붙는다.
+# Brave 는 Zipkin 계열에 묶인다.
+#
+# exporter(OTLP/Zipkin)는 **일부러 넣지 않는다** — 수집 백엔드가 정해지는 Phase 6 의 몫이다.
+# 지금 필요한 것은 span 생성 + traceId 전파 + 로그 상관관계뿐이다.
+micrometer-tracing-bridge-otel = { module = "io.micrometer:micrometer-tracing-bridge-otel" }
 
 # --- Validation ---
 spring-boot-starter-validation = { module = "org.springframework.boot:spring-boot-starter-validation", version.ref = "spring-boot" }

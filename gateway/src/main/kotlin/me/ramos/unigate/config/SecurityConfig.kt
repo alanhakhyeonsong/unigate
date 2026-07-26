@@ -16,12 +16,14 @@ import org.springframework.security.oauth2.client.web.server.ServerOAuth2Authori
 import org.springframework.security.oauth2.client.web.server.ServerOAuth2AuthorizedClientRepository
 import org.springframework.security.oauth2.client.web.server.WebSessionServerOAuth2AuthorizedClientRepository
 import org.springframework.security.web.server.SecurityWebFilterChain
+import org.springframework.security.web.server.ServerAuthenticationEntryPoint
 import org.springframework.security.web.server.authentication.ServerAuthenticationFailureHandler
 import org.springframework.security.web.server.authentication.ServerAuthenticationSuccessHandler
 import org.springframework.security.web.server.authentication.logout.DelegatingServerLogoutHandler
 import org.springframework.security.web.server.authentication.logout.SecurityContextServerLogoutHandler
 import org.springframework.security.web.server.authentication.logout.ServerLogoutHandler
 import org.springframework.security.web.server.authentication.logout.ServerLogoutSuccessHandler
+import org.springframework.security.web.server.authorization.ServerAccessDeniedHandler
 
 /**
  * 게이트웨이 인증 정책 — Authorization Code Flow (BFF).
@@ -47,9 +49,21 @@ class SecurityConfig(
     authenticationSuccessHandler: ServerAuthenticationSuccessHandler,
     authenticationFailureHandler: ServerAuthenticationFailureHandler,
     auditingLogoutHandler: ServerLogoutHandler,
+    authenticationEntryPoint: ServerAuthenticationEntryPoint,
+    accessDeniedHandler: ServerAccessDeniedHandler,
   ): SecurityWebFilterChain =
     http
-      .authorizeExchange { exchanges ->
+      // ── Phase 4: 인증·인가 실패를 RFC 9457 Problem Detail 로 ──────────────
+      // 미인증 요청은 지금까지 **무조건** 302 로 나갔다. 브라우저 주소창 이동에는 맞지만
+      // SPA 의 fetch() 에는 CORS 에러로 둔갑해 진짜 원인(미인증)을 감춘다(CLAUDE.md §6.1).
+      // entryPoint 가 요청 성격을 보고 302(내비게이션) / 401 problem+json(XHR) 으로 가른다.
+      //
+      // ⚠️ 이 블록은 oauth2Login **앞이든 뒤든** 상관없지만, 여기서 지정하지 않으면 oauth2Login 이
+      // 등록하는 기본 RedirectServerAuthenticationEntryPoint 가 그대로 쓰인다.
+      .exceptionHandling { exceptions ->
+        exceptions.authenticationEntryPoint(authenticationEntryPoint)
+        exceptions.accessDeniedHandler(accessDeniedHandler)
+      }.authorizeExchange { exchanges ->
         exchanges.pathMatchers(*PUBLIC_PATHS).permitAll()
 
         // local 프로브(`/debug/**`)는 @Profile("local") 이라 다른 프로파일에는 라우트 자체가 없다.
@@ -59,11 +73,8 @@ class SecurityConfig(
           exchanges.pathMatchers(*LOCAL_ONLY_PUBLIC_PATHS).permitAll()
         }
 
-        // 나머지는 전부 인증 필요. 미인증 요청은 302 로 Keycloak 인가 엔드포인트로 나간다.
-        //
-        // TODO(샘플 FE 연동 시): XHR(`fetch`)에는 302 대신 401 + 로그인 URL 을 돌려줘야 한다.
-        //   fetch 가 302 를 그대로 따라가 Keycloak 로그인 페이지를 요청하면 CORS 에러로 둔갑해
-        //   진짜 원인(미인증)이 가려진다. (CLAUDE.md §6.1)
+        // 나머지는 전부 인증 필요. 미인증 요청의 응답 형태는 위 exceptionHandling 이 정한다
+        // (브라우저 내비게이션 → 302 Keycloak / XHR → 401 problem+json + loginUrl).
         exchanges.anyExchange().authenticated()
       }.oauth2Login { oauth2 ->
         // PKCE 를 쓰기 위해 resolver 를 명시적으로 갈아끼운다. 이유는 아래 빈 주석 참조.
@@ -107,6 +118,11 @@ class SecurityConfig(
         //   Keycloak 세션까지 종료해야 진짜 로그아웃이다. (OIDC RP-Initiated Logout)
         logout.logoutSuccessHandler(oidcLogoutSuccessHandler(clientRegistrationRepository))
       }
+      // ⚠️ CSRF 거부는 exceptionHandling 의 accessDeniedHandler 를 타지 않는다.
+      // `CsrfWebFilter` 가 자체 handler(기본값 `HttpStatusServerAccessDeniedHandler`)를 직접 호출하기
+      // 때문이다. 실제로 여기를 빠뜨렸을 때 CSRF 403 만 `text/plain: Access Denied` 로 나갔다.
+      // 같은 핸들러를 명시적으로 다시 꽂아 403 응답 형식을 하나로 맞춘다.
+      .csrf { csrf -> csrf.accessDeniedHandler(accessDeniedHandler) }
       // CSRF 는 **기본값(활성)** 으로 되돌렸다. 이전 단계의 `.csrf { it.disable() }` 는
       // 인증이 없던 시기의 임시 조치였다. 세션 쿠키로 인증하는 순간 브라우저는 교차 사이트
       // 요청에도 쿠키를 자동으로 실어 보내므로 CSRF 가 실제 공격 표면이 된다.
