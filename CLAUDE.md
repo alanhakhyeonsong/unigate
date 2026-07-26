@@ -1,7 +1,14 @@
 # unigate — 프로젝트 지침
 
-> Spring Cloud Gateway 기반 중앙 인증 게이트웨이. 게이트웨이는 **인증만** 담당(BFF + Token Relay)하고 인가는 다운스트림이 처리한다.
-> ⚠️ 이 대전제는 **IAM 플랫폼으로 확장 결정됨**(`docs/IAM_PLATFORM_DECISION.md`, O4 승인). **Phase 8부터 적용**하며 Phase 1~7은 현 문구대로 진행한다. Phase 1~7 작업에 authz/테넌트 로직을 조기 유입하지 않는다.
+> unigate 는 **MSA 공통 IAM 플랫폼**이다. **GW**(Spring Cloud Gateway)는 인증(BFF + Token Relay) +
+> **coarse 인가**(route-level role · 테넌트 멤버십 게이트) + 테넌트 전파를, **IAM 서비스**는 회원·프로필·역할·
+> 테넌트 도메인과 Keycloak Admin 봉인을 담당한다. **fine 인가(자원 소유권·상태)는 다운스트림**이 처리한다.
+> 다운스트림은 인증/관리 흐름에서 Keycloak 에 직접 접근하지 않는다(JWKS 서명검증만 허용).
+>
+> 📌 **Phase 8부터 적용된 문구다**(`docs/IAM_PLATFORM_DECISION.md` §15 의 2단계 갱신 완료).
+> Phase 1~7 산출물은 "게이트웨이는 인증만" 전제로 만들어졌고 **그대로 유효하다** — GW 의 coarse 인가는
+> Phase 9 에서 추가된다. 즉 지금 게이트웨이 코드에 authz/테넌트 로직은 **아직 없다.**
+>
 > 전역 지침(`~/.claude/CLAUDE.md`)을 상속한다. 이 문서는 **unigate 고유 규칙**만 담는다.
 
 ## 문서 지도
@@ -148,30 +155,48 @@ Reactive 스택에서 **컴파일은 되지만 부하 시 터지는** 것들이�
 |---|---|---|
 | 이벤트 루프에서 블로킹 호출 | 저부하 정상, 고부하에서 전체 지연 폭발 | `reactor-netty-http-nio` 스레드에서 JDBC·`Thread.sleep`·동기 HTTP 금지 |
 | `.block()` 사용 | `IllegalStateException` 또는 데드락 | 프로덕션 코드에서 금지. coroutine 경계는 `mono { }` / `awaitBody()` |
-| Servlet 의존성 유입 | 기동 실패 | `spring-boot-starter-web` 금지. WebFlux만 |
+| Servlet 의존성 유입 | 기동 실패 | **`gateway` 모듈 한정** — `spring-boot-starter-web` 금지, WebFlux만. `iam` 모듈은 **반대**다(§5.1) |
 | JPA 습관 | 컴파일은 되나 의도와 다름 | R2DBC엔 지연로딩·더티체킹·영속성 컨텍스트 없음. 저장은 항상 명시적 |
 | 스키마 마이그레이션 | 테이블 없음 | R2DBC는 마이그레이션 기능 없음 → **Flyway(JDBC, 부팅 1회)** 로 분리 |
 | `@Transactional` 오용 | 트랜잭션 미적용 | reactive는 `TransactionalOperator` 또는 reactive tx manager 기반 |
 
 > 상세 근거는 `docs/PROJECT_SETUP_PLAN.md` §2.1.
+>
+> ⚠️ **이 표는 전부 `gateway` 모듈(WebFlux) 이야기다.** `iam` 모듈은 Servlet MVC + JPA + Virtual Thread 라
+> 위 함정이 대부분 해당하지 않고, 오히려 **블로킹이 정상**이다. 모듈을 헷갈리면 정반대 조언을 하게 된다.
 
 ---
 
 ## 5. 아키텍처 · 컨벤션
 
-의존성 방향은 **`adapter → application → domain` 단방향만** 허용한다.
+의존성 방향은 **`adapter → application → domain` 단방향만** 허용한다. 이는 **모든 모듈 공통**이다.
 
 - `domain` — 순수 Kotlin. Spring 어노테이션·외부 의존성 0
-- `application` — 포트 인터페이스로만 외부와 소통. UseCase는 **`suspend` 함수**.
-  Spring은 스테레오타입(`@Service` 등)까지만 허용한다
-- `adapter` — `gatewayIn` / `keycloakOut` / `r2dbcOut` / `loggingOut`
+- `application` — 포트 인터페이스로만 외부와 소통. Spring은 스테레오타입(`@Service` 등)까지만 허용한다
+- `adapter` — 모듈별 목록은 §5.1
 
 > **이 규칙은 문서가 아니라 테스트가 강제한다** (Phase 5):
 > `gateway/src/test/.../architecture/HexagonalArchitectureTest.kt`. 위반하면 빌드가 깨진다.
+
+### 5.1 모듈 — 스택이 서로 다르다 (헷갈리면 정반대 조언이 된다)
+
+| | `gateway` | `iam` |
+|---|---|---|
+| 스택 | **WebFlux + SCG** (Netty) | **Servlet MVC + JPA + Virtual Thread** |
+| DB | R2DBC (논블로킹) | JPA / JDBC (**블로킹이 정상**) |
+| UseCase | **`suspend` 함수** | 평범한 블로킹 함수 |
+| 어댑터 | `gatewayIn` · `keycloakOut` · `r2dbcOut` · `loggingOut` | `iamIn` · `keycloakAdminOut` · `jpaOut` |
+| Keycloak 접점 | **OIDC 표준만**(discovery·JWKS·end_session·token) | **Admin API**(service account, 봉인) |
+
+**왜 스택이 다른가:** WebFlux 강제는 **SCG 제약**이다(§1.3). `iam`은 SCG가 아니므로 자유롭고, 워크로드가
+VT에 더 맞는다 — Keycloak Admin client는 블로킹이고, 관리 도메인 CRUD는 JPA의 관계·트랜잭션이 낫다.
+§1.3의 "VT와 Reactive를 섞지 말라"는 경고는 **한 앱 안** 이야기이므로, 앱을 나눠 쓰는 것은 위반이 아니다.
+
 > `valkeyOut`은 세션을 Spring Session이 전부 처리해 커스텀 어댑터가 필요 없어 **제거**했다
 > (빈 디렉토리는 "미완성"이라는 잘못된 신호를 준다). 필요해지면 그때 만든다.
 
-Keycloak 어댑터는 **OIDC 표준(discovery·JWKS)에만** 의존하고 Keycloak 고유 API는 어댑터 내부에 봉인한다.
+게이트웨이의 Keycloak 어댑터는 **OIDC 표준(discovery·JWKS)에만** 의존한다. **Admin API는 `iam` 소관**이며
+게이트웨이에 넣지 않는다(`IAM_PLATFORM_DECISION.md` D7).
 
 ### skill 라우팅
 

@@ -15,6 +15,9 @@ dependencies {
   // Kotlin Gradle
   implementation("org.jetbrains.kotlin.jvm:org.jetbrains.kotlin.jvm.gradle.plugin:${Versions.KOTLIN}")
   implementation("org.jetbrains.kotlin.plugin.spring:org.jetbrains.kotlin.plugin.spring.gradle.plugin:${Versions.KOTLIN}")
+  // iam 모듈(JPA) 전용 — Kotlin 클래스는 기본 final 이라 JPA 프록시가 못 만들어진다.
+  // 이 플러그인이 @Entity 에 no-arg 생성자와 open 을 넣어준다. gateway(R2DBC)엔 불필요.
+  implementation("org.jetbrains.kotlin.plugin.jpa:org.jetbrains.kotlin.plugin.jpa.gradle.plugin:${Versions.KOTLIN}")
 
   // Spring Boot
   implementation("org.springframework.boot:spring-boot-gradle-plugin:${Versions.SPRING_BOOT}")

@@ -66,6 +66,13 @@ micrometer-tracing-bridge-otel = { module = "io.micrometer:micrometer-tracing-br
 # --- Validation ---
 spring-boot-starter-validation = { module = "org.springframework.boot:spring-boot-starter-validation", version.ref = "spring-boot" }
 
+# --- IAM 모듈 전용 (Servlet MVC + JPA). gateway 에는 절대 넣지 않는다 ---
+# ⚠️ spring-boot-starter-web 을 gateway 클래스패스에 올리면 SCG 자동설정과 충돌해 **기동 자체가 실패**한다
+# (CLAUDE.md §4). iam 은 SCG 가 아니므로 Servlet 스택이 정상이고, Keycloak Admin client 가 블로킹이라
+# Virtual Thread 와 궁합이 맞는다 (IAM_PLATFORM_DECISION.md §11.1).
+spring-boot-starter-web = { module = "org.springframework.boot:spring-boot-starter-web", version.ref = "spring-boot" }
+spring-boot-starter-data-jpa = { module = "org.springframework.boot:spring-boot-starter-data-jpa", version.ref = "spring-boot" }
+
 # --- Testing ---
 spring-boot-starter-test = { module = "org.springframework.boot:spring-boot-starter-test", version.ref = "spring-boot" }
 kotlin-test-junit5 = { module = "org.jetbrains.kotlin:kotlin-test-junit5", version.ref = "kotlin" }
