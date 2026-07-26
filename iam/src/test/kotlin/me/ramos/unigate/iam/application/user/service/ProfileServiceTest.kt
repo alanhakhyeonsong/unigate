@@ -6,10 +6,13 @@ import io.kotest.matchers.shouldBe
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
+import me.ramos.unigate.iam.application.audit.port.outbound.RecordAuditEventOutPort
 import me.ramos.unigate.iam.application.user.dto.AcceptConsentCommand
 import me.ramos.unigate.iam.application.user.dto.UpdateMyProfileCommand
 import me.ramos.unigate.iam.application.user.policy.ConsentPolicy
 import me.ramos.unigate.iam.application.user.port.outbound.UserProfileRepositoryPort
+import me.ramos.unigate.iam.domain.audit.enums.AuditEventType
+import me.ramos.unigate.iam.domain.audit.model.AuditEvent
 import me.ramos.unigate.iam.domain.shared.vo.UserRef
 import me.ramos.unigate.iam.domain.user.model.UserProfile
 import me.ramos.unigate.iam.domain.user.vo.ConsentRecord
@@ -26,6 +29,9 @@ import java.time.ZoneOffset
 class ProfileServiceTest :
   BehaviorSpec({
     val repository = mockk<UserProfileRepositoryPort>()
+    // Phase 8g: 감사는 `relaxed` 로 둔다 — 대부분의 테스트에서 관심사가 아니고, 검증할 때만
+    // slot 으로 잡는다. relaxed 가 아니면 감사를 남기는 모든 테스트가 "예상치 못한 호출" 로 깨진다.
+    val auditPort = mockk<RecordAuditEventOutPort>(relaxed = true)
     val policy = ConsentPolicy(CURRENT_TOS)
     val clock = Clock.fixed(NOW, ZoneOffset.UTC)
 
@@ -74,7 +80,7 @@ class ProfileServiceTest :
     }
 
     Given("수정 유스케이스") {
-      val service = UpdateMyProfileService(repository, policy)
+      val service = UpdateMyProfileService(repository, auditPort, policy)
 
       When("표시 이름만 보내면") {
         val profile = activeProfile()
@@ -128,10 +134,47 @@ class ProfileServiceTest :
           }
         }
       }
+
+      // ── Phase 8g: 감사 ──────────────────────────────────────────────────
+
+      When("표시 이름을 바꾸면") {
+        every { repository.findByUserRef(UserRef(CALLER)) } returns activeProfile()
+        every { repository.save(any()) } answers { firstArg() }
+        val audited = slot<AuditEvent>()
+        every { auditPort.record(capture(audited)) } returns Unit
+
+        service.update(UpdateMyProfileCommand(userRef = CALLER, displayName = "감사용"))
+
+        Then("변경 전/후를 감사에 남긴다") {
+          audited.captured.type shouldBe AuditEventType.PROFILE_UPDATED
+          audited.captured.actorRef shouldBe CALLER
+          audited.captured.targetRef shouldBe CALLER
+          audited.captured.detail?.get("displayName") shouldBe
+            mapOf("before" to "Alice", "after" to "감사용")
+        }
+
+        Then("바뀌지 않은 필드는 감사에 담기지 않는다") {
+          // before == after 를 전부 남기면 "이 요청이 무엇을 건드렸나" 를 읽을 때 노이즈가 된다.
+          audited.captured.detail?.containsKey("locale") shouldBe false
+        }
+      }
+
+      When("같은 값을 다시 보내면(no-op)") {
+        every { repository.findByUserRef(UserRef(CALLER)) } returns activeProfile()
+        every { repository.save(any()) } answers { firstArg() }
+        val audited = slot<AuditEvent>()
+        every { auditPort.record(capture(audited)) } returns Unit
+
+        service.update(UpdateMyProfileCommand(userRef = CALLER, displayName = "Alice"))
+
+        Then("변경 내역이 빈 감사가 남는다 — 요청 본문 복사가 아니라 '일어난 변경'을 남긴다") {
+          audited.captured.detail?.isEmpty() shouldBe true
+        }
+      }
     }
 
     Given("약관 동의 유스케이스") {
-      val service = AcceptConsentService(repository, policy, clock)
+      val service = AcceptConsentService(repository, auditPort, policy, clock)
 
       When("현재 버전에 동의하면") {
         val profile = activeProfile(tosVersion = "v0")
@@ -146,6 +189,21 @@ class ProfileServiceTest :
           // 클라이언트가 보낸 시각이 아니라 주입된 Clock 의 값이어야 한다.
           saved.captured.consent?.acceptedAt shouldBe NOW
           result.consent?.valid shouldBe true
+        }
+      }
+
+      When("현재 버전에 동의하면 (감사)") {
+        every { repository.findByUserRef(UserRef(CALLER)) } returns activeProfile(tosVersion = "v0")
+        every { repository.save(any()) } answers { firstArg() }
+        val audited = slot<AuditEvent>()
+        every { auditPort.record(capture(audited)) } returns Unit
+
+        service.accept(AcceptConsentCommand(CALLER, CURRENT_TOS))
+
+        Then("이전 버전도 함께 남긴다 — 프로필에는 현재 상태만 남아 이력이 여기밖에 없다") {
+          audited.captured.type shouldBe AuditEventType.CONSENT_ACCEPTED
+          audited.captured.detail?.get("tosVersion") shouldBe CURRENT_TOS
+          audited.captured.detail?.get("previousVersion") shouldBe "v0"
         }
       }
 

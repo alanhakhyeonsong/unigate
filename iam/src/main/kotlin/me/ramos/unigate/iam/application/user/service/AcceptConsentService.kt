@@ -1,10 +1,13 @@
 package me.ramos.unigate.iam.application.user.service
 
+import me.ramos.unigate.iam.application.audit.port.outbound.RecordAuditEventOutPort
 import me.ramos.unigate.iam.application.user.dto.AcceptConsentCommand
 import me.ramos.unigate.iam.application.user.dto.MyProfileResult
 import me.ramos.unigate.iam.application.user.policy.ConsentPolicy
 import me.ramos.unigate.iam.application.user.port.inbound.AcceptConsentInPort
 import me.ramos.unigate.iam.application.user.port.outbound.UserProfileRepositoryPort
+import me.ramos.unigate.iam.domain.audit.enums.AuditEventType
+import me.ramos.unigate.iam.domain.audit.model.AuditEvent
 import me.ramos.unigate.iam.domain.user.vo.ConsentRecord
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -31,6 +34,7 @@ import java.time.Instant
 @Service
 class AcceptConsentService(
   private val userProfileRepository: UserProfileRepositoryPort,
+  private val recordAuditEventOutPort: RecordAuditEventOutPort,
   private val consentPolicy: ConsentPolicy,
   private val clock: Clock,
 ) : AcceptConsentInPort {
@@ -44,6 +48,8 @@ class AcceptConsentService(
     }
 
     val profile = userProfileRepository.loadCaller(command.userRef)
+    val previousVersion = profile.consent?.tosVersion
+
     profile.acceptConsent(
       ConsentRecord(
         tosVersion = consentPolicy.currentTosVersion,
@@ -51,6 +57,22 @@ class AcceptConsentService(
         acceptedAt = Instant.now(clock),
       ),
     )
-    return userProfileRepository.save(profile).toMyProfileResult(consentPolicy)
+    val saved = userProfileRepository.save(profile)
+
+    // 이 감사 기록이 이 유스케이스에서 가장 중요한 산출물일 수 있다.
+    // `user_profile.consent_*` 는 **현재 상태만** 담아 재동의하면 이전 동의가 덮인다. 즉 "언제 어느
+    // 버전에 동의했는가" 의 **이력**은 여기에만 남는다 — 동의 기록이 법적 근거로 쓰인다면 그 이력이
+    // 본체다. `previousVersion` 을 함께 남겨 개정 이력을 재구성할 수 있게 한다.
+    recordAuditEventOutPort.record(
+      AuditEvent(
+        type = AuditEventType.CONSENT_ACCEPTED,
+        actorRef = command.userRef,
+        targetRef = command.userRef,
+        targetEmail = saved.email,
+        detail = mapOf("tosVersion" to consentPolicy.currentTosVersion, "previousVersion" to previousVersion),
+      ),
+    )
+
+    return saved.toMyProfileResult(consentPolicy)
   }
 }
