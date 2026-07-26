@@ -162,8 +162,14 @@ Reactive 스택에서 **컴파일은 되지만 부하 시 터지는** 것들이�
 의존성 방향은 **`adapter → application → domain` 단방향만** 허용한다.
 
 - `domain` — 순수 Kotlin. Spring 어노테이션·외부 의존성 0
-- `application` — 포트 인터페이스로만 외부와 소통. UseCase는 **`suspend` 함수**
-- `adapter` — `gatewayIn` / `keycloakOut` / `valkeyOut` / `r2dbcOut`
+- `application` — 포트 인터페이스로만 외부와 소통. UseCase는 **`suspend` 함수**.
+  Spring은 스테레오타입(`@Service` 등)까지만 허용한다
+- `adapter` — `gatewayIn` / `keycloakOut` / `r2dbcOut` / `loggingOut`
+
+> **이 규칙은 문서가 아니라 테스트가 강제한다** (Phase 5):
+> `gateway/src/test/.../architecture/HexagonalArchitectureTest.kt`. 위반하면 빌드가 깨진다.
+> `valkeyOut`은 세션을 Spring Session이 전부 처리해 커스텀 어댑터가 필요 없어 **제거**했다
+> (빈 디렉토리는 "미완성"이라는 잘못된 신호를 준다). 필요해지면 그때 만든다.
 
 Keycloak 어댑터는 **OIDC 표준(discovery·JWKS)에만** 의존하고 Keycloak 고유 API는 어댑터 내부에 봉인한다.
 
