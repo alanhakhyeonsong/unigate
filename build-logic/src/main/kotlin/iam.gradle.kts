@@ -59,6 +59,8 @@ dependencies {
     add("testImplementation", it.findLibrary("kotest-assertions-core").get())
     add("testImplementation", it.findLibrary("mockk").get())
     add("testImplementation", it.findLibrary("springmockk").get())
+    // Keycloak Admin 어댑터 테스트용 — 실제 Keycloak 없이 HTTP 계약(상태코드·헤더)을 검증한다.
+    add("testImplementation", it.findLibrary("mockwebserver").get())
     add("testRuntimeOnly", it.findLibrary("junit-platform-launcher").get())
   }
 }

@@ -1,6 +1,7 @@
 package me.ramos.unigate.iam
 
 import org.springframework.boot.autoconfigure.SpringBootApplication
+import org.springframework.boot.context.properties.ConfigurationPropertiesScan
 import org.springframework.boot.runApplication
 
 /**
@@ -21,6 +22,7 @@ import org.springframework.boot.runApplication
  *   IAM 이 Keycloak 에 접근하는 것은 **Admin API 뿐**이며 자신의 service account 토큰을 쓴다(D7).
  */
 @SpringBootApplication
+@ConfigurationPropertiesScan
 class IamApplication
 
 fun main(args: Array<String>) {
