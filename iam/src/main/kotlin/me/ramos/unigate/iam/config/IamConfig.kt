@@ -1,5 +1,7 @@
 package me.ramos.unigate.iam.config
 
+import me.ramos.unigate.iam.application.user.policy.ConsentPolicy
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.scheduling.annotation.EnableScheduling
@@ -24,4 +26,16 @@ class IamConfig {
    */
   @Bean
   fun clock(): Clock = Clock.systemUTC()
+
+  /**
+   * 현재 약관 버전을 설정에서 읽어 정책 값으로 만든다 (Phase 8e).
+   *
+   * [ConsentPolicy] 자체는 순수 Kotlin 이라 Spring 을 모른다 — `application` 레이어가
+   * `org.springframework.beans..`(`@Value`)를 import 하는 것을 ArchUnit 이 막기 때문이다.
+   * [clock] 과 똑같은 구도다: **값은 application 이 정의하고, 값을 조달하는 일은 config 가 한다.**
+   */
+  @Bean
+  fun consentPolicy(
+    @Value("\${unigate.iam.consent.current-tos-version}") currentTosVersion: String,
+  ): ConsentPolicy = ConsentPolicy(currentTosVersion)
 }

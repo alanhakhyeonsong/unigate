@@ -16,7 +16,9 @@ import org.springframework.security.oauth2.jwt.JwtClaimValidator
 import org.springframework.security.oauth2.jwt.JwtDecoder
 import org.springframework.security.oauth2.jwt.JwtValidators
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder
+import org.springframework.security.web.AuthenticationEntryPoint
 import org.springframework.security.web.SecurityFilterChain
+import org.springframework.security.web.access.AccessDeniedHandler
 
 /**
  * IAM 인증 정책 — **Resource Server** (Phase 8f).
@@ -51,6 +53,8 @@ class IamSecurityConfig(
   fun iamSecurityFilterChain(
     http: HttpSecurity,
     jwtDecoder: JwtDecoder,
+    authenticationEntryPoint: AuthenticationEntryPoint,
+    accessDeniedHandler: AccessDeniedHandler,
   ): SecurityFilterChain =
     http
       // 쿠키·세션을 쓰지 않으므로 CSRF 공격 표면이 없다. Bearer 토큰은 브라우저가 자동으로
@@ -75,6 +79,17 @@ class IamSecurityConfig(
         authorize.anyRequest().authenticated()
       }.oauth2ResourceServer { oauth2 ->
         oauth2.jwt { jwt -> jwt.decoder(jwtDecoder) }
+        // ⚠️ Phase 8e: 여기와 아래 exceptionHandling **둘 다** 지정해야 한다.
+        // `oauth2ResourceServer` 는 자기 필터(BearerTokenAuthenticationFilter)가 인증에 실패했을 때
+        // **자체 entryPoint** 를 쓴다. 그래서 exceptionHandling 만 바꾸면 "토큰이 잘못된" 401 은
+        // 여전히 기본 형식(빈 본문)으로 나가고, "토큰이 아예 없는" 401 만 형식이 바뀐다.
+        // 두 경로의 응답 형식이 갈리는 이 함정은 응답을 직접 비교해보기 전엔 눈치채기 어렵다.
+        oauth2.authenticationEntryPoint(authenticationEntryPoint)
+        oauth2.accessDeniedHandler(accessDeniedHandler)
+      }.exceptionHandling { exceptions ->
+        // 보안 필터 체인의 나머지 구간(토큰이 아예 없는 요청 등)이 쓰는 경로.
+        exceptions.authenticationEntryPoint(authenticationEntryPoint)
+        exceptions.accessDeniedHandler(accessDeniedHandler)
       }.build()
 
   /**

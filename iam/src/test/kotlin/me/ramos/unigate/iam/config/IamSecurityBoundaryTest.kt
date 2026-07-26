@@ -3,6 +3,8 @@ package me.ramos.unigate.iam.config
 import com.ninjasquad.springmockk.MockkBean
 import io.mockk.every
 import me.ramos.unigate.iam.adapter.iamIn.CallerProbeController
+import me.ramos.unigate.iam.adapter.iamIn.ProblemDetailAccessDeniedHandler
+import me.ramos.unigate.iam.adapter.iamIn.ProblemDetailAuthenticationEntryPoint
 import me.ramos.unigate.iam.adapter.iamIn.RegisterController
 import me.ramos.unigate.iam.adapter.keycloakAdminOut.KeycloakAdminProperties
 import me.ramos.unigate.iam.application.user.dto.RegisterUserResult
@@ -41,7 +43,13 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
  * 계층: L3(슬라이스). 외부 의존이 없어 `@Tag("testcontainers")` 를 붙이지 않는다 — CI 게이트에서 돈다.
  */
 @WebMvcTest(controllers = [RegisterController::class, CallerProbeController::class])
-@Import(IamSecurityConfig::class)
+// Phase 8e: `IamSecurityConfig` 가 Problem Detail 핸들러 두 개를 주입받으므로 함께 올린다.
+// 빠뜨리면 컨텍스트 자체가 뜨지 않아 **모든 테스트가 한꺼번에 실패**한다.
+@Import(
+  IamSecurityConfig::class,
+  ProblemDetailAuthenticationEntryPoint::class,
+  ProblemDetailAccessDeniedHandler::class,
+)
 @EnableConfigurationProperties(KeycloakAdminProperties::class)
 // CallerProbeController 가 @Profile("local") 이라 프로파일을 켜야 라우트가 존재한다.
 // 동시에 IamSecurityConfig 의 LOCAL_ONLY_PUBLIC_PATHS 분기도 이 프로파일에서만 켜진다.

@@ -1,0 +1,104 @@
+### unigate IAM — 프로필 API 수동 테스트 (Phase 8e)
+###
+### 두 가지 경로로 부를 수 있고, **둘 다 확인해야 한다.**
+###
+### 1) 게이트웨이 경유(:8080) — 실제 사용 경로. 브라우저 세션 쿠키로 인증하고 GW 가 JWT 를 relay 한다.
+###    curl 로는 세션 쿠키를 만들기 번거로우므로 브라우저에서 로그인한 뒤 개발자도구로 확인하는 편이 빠르다.
+### 2) IAM 직접(:8090) — Bearer 토큰을 직접 실어 보낸다. 아래 요청들이 이 방식이다.
+###
+### ⚠️ 토큰의 `aud` 에 `unigate-iam` 이 없으면 전부 401 이다(realm 의 `iam-audience` 매퍼).
+###    증상이 "그냥 401" 이라 원인이 안 보이므로, 막히면 먼저 아래 "토큰 발급" 의 aud 를 확인한다.
+
+@iamUrl = http://localhost:8090
+@gatewayUrl = http://localhost:8080
+
+### 토큰 발급 — 값은 셸에서 얻어 아래 @accessToken 에 붙여넣는다.
+### source ./keycloak.secret.env
+### curl -s -X POST "$KEYCLOAK_ISSUER_URI/protocol/openid-connect/token" \
+###   -d grant_type=client_credentials -d "client_id=$KEYCLOAK_OAUTH_CLIENT_ID" \
+###   --data-urlencode "client_secret=$KEYCLOAK_OAUTH_CLIENT_SECRET" | jq -r .access_token
+@accessToken = <붙여넣기 — 커밋하지 않는다>
+
+### ===== 공개 라우트 (토큰 불필요) =====
+
+### 가입 — GW 경유. 여기에만 강한 rate limit 이 걸려 있다(분당 12회 · 버스트 3).
+POST {{gatewayUrl}}/iam/register
+Content-Type: application/json
+
+{
+  "email": "alice@example.local",
+  "displayName": "앨리스",
+  "firstName": "앨리",
+  "lastName": "스",
+  "locale": "ko-KR",
+  "tosVersion": "v1"
+}
+
+### rate limit 확인 — 위 요청을 연속 4번 보내면 4번째가 429 다.
+### 응답 헤더 x-ratelimit-remaining 이 5씩 줄어드는지 함께 본다.
+
+### ===== 인증 라우트 (Bearer 필요) =====
+
+### 내 프로필 조회
+### 가입 직후에는 404 다 — outbox 워커가 userRef 를 채워야 조회된다(수 초 소요).
+GET {{iamUrl}}/iam/profile
+Authorization: Bearer {{accessToken}}
+
+### 표시 이름만 수정 — 생략한 필드는 변경되지 않는다(부분 갱신)
+PATCH {{iamUrl}}/iam/profile
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "displayName": "바뀐 이름"
+}
+
+### locale 만 수정
+PATCH {{iamUrl}}/iam/profile
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "locale": "en-US"
+}
+
+### email 변경 시도 — **무시된다.** 신원 필드라 Keycloak 반영이 필요하고 별도 유스케이스다.
+### 200 이 오지만 email 은 그대로여야 한다(위 조회로 확인).
+PATCH {{iamUrl}}/iam/profile
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "email": "hacked@example.local"
+}
+
+### 약관 동의 — 서버가 현재 버전(unigate.iam.consent.current-tos-version)과 대조한다.
+POST {{iamUrl}}/iam/profile/consent
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "tosVersion": "v1"
+}
+
+### 구버전 동의 시도 — 409 + currentTosVersion 을 응답에 실어준다.
+POST {{iamUrl}}/iam/profile/consent
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "tosVersion": "v0"
+}
+
+### ===== 인가 경계 확인 =====
+
+### 토큰 없이 조회 — 401 + application/problem+json + WWW-Authenticate 헤더
+GET {{iamUrl}}/iam/profile
+
+### 위조 토큰 — 401. WWW-Authenticate 의 error_description 에 사유가 담긴다.
+GET {{iamUrl}}/iam/profile
+Authorization: Bearer FORGED
+
+### GW 경유 미인증 조회 — XHR 이면 401 + loginUrl, 브라우저 내비게이션이면 302
+GET {{gatewayUrl}}/iam/profile
+Sec-Fetch-Mode: cors
