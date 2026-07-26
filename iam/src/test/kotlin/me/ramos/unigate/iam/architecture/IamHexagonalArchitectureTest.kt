@@ -102,7 +102,29 @@ class IamHexagonalArchitectureTest {
         "jakarta.persistence..",
         "jakarta.servlet..",
         "org.hibernate..",
+        // 직렬화 라이브러리도 막는다. outbox payload 를 JSON 으로 만드는 것은 **저장 형식**의 문제라
+        // 어댑터 관심사다 — UseCase 가 ObjectMapper 를 직접 쓰면 그 경계가 무너진다.
+        // (그래서 PayloadSerializerPort 로 뽑았다.)
+        "com.fasterxml..",
       ).because("application 은 기술을 몰라야 한다. Spring 은 스테레오타입(@Service 등)까지만 허용한다.")
+      .check(classes)
+  }
+
+  @Test
+  fun `application 은 트랜잭션 어노테이션만 Spring 에서 가져온다`() {
+    // `@Transactional` 은 예외적으로 허용한다 — 트랜잭션 경계는 **유스케이스의 본질적 책임**이고
+    // (outbox 는 특히 그렇다: 프로필과 지시가 같은 커밋이어야 한다), 이를 어댑터로 밀어내면
+    // 경계가 코드에서 보이지 않게 된다.
+    //
+    // 다만 그 예외가 다른 Spring 기능으로 번지지 않도록 위 규칙이 web/data/security 를 막는다.
+    // 이 테스트는 그 의도를 문서화하는 역할이다.
+    noClasses()
+      .that()
+      .resideInAPackage("$ROOT_PACKAGE.application..")
+      .should()
+      .dependOnClassesThat()
+      .resideInAnyPackage("org.springframework.context..", "org.springframework.beans..")
+      .because("application 은 Spring 컨테이너 API 를 직접 다루지 않는다.")
       .check(classes)
   }
 

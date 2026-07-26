@@ -27,6 +27,7 @@
 | [15](15-archunit-dependency-guard.md) | ArchUnit — 아키텍처 규칙을 문서에서 테스트로 | 5 | 학습중 | 규칙을 빌드가 막게 한다. 단 **통과만 하는 가드는 무의미** — 일부러 위반을 넣어 검증해야 한다 |
 | [16](16-virtual-thread-vs-reactive-two-modules.md) | 한 저장소에 Reactive와 Virtual Thread를 함께 두기 | 8 | 학습중 | "VT 금지"는 원칙이 아니라 **SCG 제약의 파생**이었다. 앱을 나누면 각자 자기 모델을 온전히 쓴다 |
 | [17](17-service-account-and-idempotent-admin-api.md) | service account 토큰과 멱등한 Admin API 호출 | 8 | 학습중 | 토큰이 **두 종류**다(사용자 JWT ≠ 관리 자격). outbox 재시도 대비 멱등 필수, VT 라 `ReentrantLock` |
+| [18](18-outbox-worker-multi-instance.md) | 다중 인스턴스 outbox 워커 — SKIP LOCKED와 트랜잭션 경계 | 8 | 학습중 | 중복을 막는 건 스케줄러가 아니라 **DB 행 잠금**. 분산 락은 오히려 병목. 워커가 죽으면 롤백으로 자동 인계 |
 
 상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
 
@@ -73,9 +74,10 @@
 
 - [x] **Virtual Thread vs Reactive** — 같은 문제의 경쟁 해법. **`iam` 모듈에서 실제로 VT 를 쓴다** → [16](16-virtual-thread-vs-reactive-two-modules.md)
 - [x] **service account · 멱등 Admin API** → [17](17-service-account-and-idempotent-admin-api.md)
-- [ ] **VT pinning** — `synchronized` 안에서 블로킹하면 캐리어가 묶인다. `ReentrantLock` 으로 예방했으나 **실측은 미완** (P8d)
-- [ ] **outbox 패턴** — 두 시스템 쓰기의 분산 일관성. 도메인 상태에 남긴 흔적은 [16](16-virtual-thread-vs-reactive-two-modules.md) 참조, 구현은 P8d
-- [ ] **JPA 엔티티 ↔ 도메인 모델 매핑** — 분리하기로 했는데(ArchUnit 강제) 비용이 얼마인지는 P8d 에서
+- [x] **outbox 패턴 · 다중 인스턴스 워커** → [18](18-outbox-worker-multi-instance.md)
+- [x] **JPA 엔티티 ↔ 도메인 모델 매핑** — 분리 비용을 실제로 치러봤다 → [18](18-outbox-worker-multi-instance.md) (`JpaUserProfileAdapter`)
+- [ ] **VT pinning** — `ReentrantLock` 으로 예방했으나 **실측 여전히 미완**. HikariCP 를 태우게 됐으니 `-Djdk.tracePinnedThreads=full` 로 확인 가능한 조건은 갖춰졌다
+- [ ] **Spring 트랜잭션 전파** — `REQUIRES_NEW` 로 건별 커밋을 만들었는데, 전파 옵션별 동작을 정리한 적은 없다
 
 ### 참고 (직접 쓰지는 않지만 이해가 필요한 것)
 
