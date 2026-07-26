@@ -61,6 +61,13 @@ dependencies {
     add("testImplementation", it.findLibrary("springmockk").get())
     // Keycloak Admin 어댑터 테스트용 — 실제 Keycloak 없이 HTTP 계약(상태코드·헤더)을 검증한다.
     add("testImplementation", it.findLibrary("mockwebserver").get())
+
+    // outbox 의 SKIP LOCKED 동시성은 **실제 PostgreSQL 없이는 검증할 수 없다**(H2 등은 미지원).
+    // Testcontainers 를 쓰려 했으나 이 환경의 Docker 29.x 와 Testcontainers 1.21.3(Boot BOM 고정)이
+    // 맞지 않아 컨테이너를 띄우지 못했다 — docker-java 가 소켓에서 HTTP 400 을 받는다(curl 은 200).
+    // 그래서 docker-compose 로 이미 띄우는 로컬 PostgreSQL 에 직접 붙는다. **검증 목적(실제 PG 에서
+    // SKIP LOCKED 확인)은 그대로 달성**되고, Docker 소켓 API 대신 JDBC 만 쓰므로 이 문제를 우회한다.
+    // 자세한 경위는 docs/learning/18 참조.
     add("testRuntimeOnly", it.findLibrary("junit-platform-launcher").get())
   }
 }
