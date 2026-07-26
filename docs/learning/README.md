@@ -25,6 +25,7 @@
 | [13](13-distributed-tracing-reactor-context.md) | 분산 트레이싱 — traceparent 전파와 Reactor 컨텍스트 | 4 | 학습중 | SCG 가 traceparent 를 자동 주입. 단 `mono { }` 안에서 읽은 traceId 는 **항상 null** — 복원은 Reactor 연산자 경계까지다 |
 | [14](14-problem-detail-xhr-auth-boundary.md) | RFC 9457 Problem Detail 과 XHR 인증 경계 | 4 | 학습중 | 미인증에 무조건 302 를 주면 SPA 에선 CORS 에러로 둔갑. `Sec-Fetch-Mode` 로 갈라 401 + loginUrl |
 | [15](15-archunit-dependency-guard.md) | ArchUnit — 아키텍처 규칙을 문서에서 테스트로 | 5 | 학습중 | 규칙을 빌드가 막게 한다. 단 **통과만 하는 가드는 무의미** — 일부러 위반을 넣어 검증해야 한다 |
+| [16](16-virtual-thread-vs-reactive-two-modules.md) | 한 저장소에 Reactive와 Virtual Thread를 함께 두기 | 8 | 학습중 | "VT 금지"는 원칙이 아니라 **SCG 제약의 파생**이었다. 앱을 나누면 각자 자기 모델을 온전히 쓴다 |
 
 상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
 
@@ -67,9 +68,14 @@
 - [x] **포트 교체가능성** — 구현이 하나뿐인 인터페이스는 추상화가 검증되지 않은 상태다 → [15](15-archunit-dependency-guard.md) §4
 - [ ] **`@ConditionalOnProperty` 로 빈 선택** — 조건부 자동설정의 우선순위·디버깅 방법
 
-### 참고 (직접 쓰지는 않지만 이해가 필요한 것)
+### Phase 8 — IAM 서비스
 
-- [ ] **Virtual Thread vs Reactive** — 같은 문제의 경쟁 해법. unigate 가 VT 를 쓰지 않는 이유 (`CLAUDE.md` §1.3)
+- [x] **Virtual Thread vs Reactive** — 같은 문제의 경쟁 해법. **`iam` 모듈에서 실제로 VT 를 쓴다** → [16](16-virtual-thread-vs-reactive-two-modules.md)
+- [ ] **VT pinning** — `synchronized` 안에서 블로킹하면 캐리어가 묶인다. HikariCP 로 실측 필요 (P8d)
+- [ ] **outbox 패턴** — 두 시스템 쓰기의 분산 일관성. 도메인 상태에 남긴 흔적은 [16](16-virtual-thread-vs-reactive-two-modules.md) 참조, 구현은 P8d
+- [ ] **JPA 엔티티 ↔ 도메인 모델 매핑** — 분리하기로 했는데(ArchUnit 강제) 비용이 얼마인지는 P8d 에서
+
+### 참고 (직접 쓰지는 않지만 이해가 필요한 것)
 
 ### 샘플 앱 구성 시
 

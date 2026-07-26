@@ -157,15 +157,33 @@ flowchart TB
 
 ### 6.3 대표 유스케이스 오케스트레이션
 
-**UC-1 가입(Register)** — IAM application service, 트랜잭션 경계:
+**UC-1 가입(Register)** — **outbox 패턴**(§16 에서 확정). IAM DB 를 먼저 쓰고 Keycloak 반영은 워커가 한다:
+
 1. 입력 검증(email·displayName) — 도메인 VO
-2. `IdentityProviderPort.createUser()` → Keycloak Admin 이 사용자 생성, `keycloakUserId` 반환(service account 토큰)
-3. `UserProfile`(UserRef=keycloakUserId, onboarding=PENDING) 생성 → IAM DB(JPA)
-4. `AuditPort.record("USER_REGISTERED")`
-5. 커밋
-- **보상(중요):** 3 이 2 이후 실패하면 Keycloak 사용자를 지우거나 재조정 대상으로 표시해야 한다. Keycloak 쓰기 +
-  IAM DB 쓰기 = **두 시스템** → saga/보상 또는 outbox 필요. **이 분산 일관성이 곧 도메인 복잡도이자 패스스루가
-  아니라는 증거**다.
+2. **IAM DB 트랜잭션 하나로** 다음을 함께 쓴다(로컬 트랜잭션이라 원자적):
+   - `UserProfile`(onboarding=`PENDING_IDENTITY`, UserRef 아직 없음)
+   - `OutboxRecord(CREATE_KEYCLOAK_USER)`
+   - `AuditEvent("USER_REGISTRATION_REQUESTED")`
+3. **커밋 — 여기서 사용자에게 응답한다(202 Accepted 성격).**
+4. 워커가 outbox 를 폴링 → `IdentityProviderPort.createUser()`(service account 토큰) → `keycloakUserId` 획득
+5. `UserProfile.UserRef` 채우고 onboarding=`ACTIVE` 로 전이 + outbox 레코드 완료 처리
+
+> **왜 순서를 뒤집었나.** "Keycloak 먼저 → IAM DB" 순서는 2 이후 3 이 실패하면 **Keycloak 에 고아 사용자**가
+> 남고, 그 보상(삭제) 역시 실패할 수 있어 **끝이 없다.** outbox 는 원자성이 필요한 지점을 **IAM DB 한 곳**으로
+> 모으고, 바깥 시스템(Keycloak) 반영은 **재시도 가능한 비동기 작업**으로 바꾼다. 실패해도 outbox 레코드가
+> 남아 있어 "잃어버리지 않는다"가 보장된다.
+
+**대가 (반드시 인지할 것):**
+- **가입 직후 로그인이 안 될 수 있다.** Keycloak 반영 전이므로 FE 는 "처리 중" 상태를 다뤄야 한다.
+  즉시성이 필요하면 워커 대신 **커밋 직후 동기 트리거 + 실패 시 outbox 폴백**으로 완화할 수 있다(하이브리드).
+- **이메일 중복을 늦게 발견한다.** 중복 판정의 SoT 는 Keycloak 인데 IAM DB 를 먼저 쓰므로, 4 에서야
+  `409` 를 만난다. → `UserProfile` 에 **실패 상태**(`IDENTITY_FAILED`)가 필요하고 사용자에게 알릴 경로가 있어야
+  한다. IAM DB 에 email unique 를 걸어 **1차 방어**는 하되 그것이 SoT 는 아니다(경합·기존 사용자 존재).
+- **워커·폴링 인프라가 필요하다.** 단일 인스턴스 가정이면 단순하지만, 다중 인스턴스면 레코드 잠금
+  (`SELECT ... FOR UPDATE SKIP LOCKED`)이 필요하다.
+- **최소 1회 실행**이므로 Keycloak 호출은 **멱등**해야 한다(이미 생성됐는지 조회 후 생성).
+
+**이 분산 일관성이 곧 도메인 복잡도이자 패스스루가 아니라는 증거**다(§6 O1 관문 논증의 실체).
 
 **UC-2 테넌트 배정(Assign / 초대 수락):**
 1. 호출자 = relay JWT(§D4). coarse: 대상 테넌트 T 의 tenant-admin 역할 보유 확인(GW coarse gate, §8)
@@ -431,8 +449,11 @@ convention 을 `gateway`(webflux) 옆에 추가하면 된다.
 
 O1~O4 는 닫혔다. 그 아래 **더 세부적인** 결정이 P8/P9 착수 전에 남는다.
 
-- [ ] **분산 일관성 전략** — Keycloak 쓰기 + IAM DB 쓰기의 saga/outbox/보상. *가정:* 가입/배정은 동기 보상으로
-      시작. *대안:* 규모 커지면 outbox + 이벤트. **P8 착수 전 필요 · 학습 문서 대상.**
+- [x] **분산 일관성 전략** — **outbox 패턴으로 확정**(2026-07-26, 사용자 결정). 원안의 "동기 보상으로 시작"을
+      기각했다. 이유: 보상 자체가 실패하면 Keycloak 에 고아 사용자가 남고 그 복구가 끝이 없다. outbox 는
+      원자성이 필요한 지점을 **IAM DB 한 곳**으로 모으고 바깥 반영을 재시도 가능한 작업으로 바꾼다.
+      흐름과 대가는 **§6.3 UC-1** 참조(가입 직후 로그인 불가·중복 발견 지연·워커 필요·멱등성 요구).
+      도메인 영향: `UserProfile` 에 `PENDING_IDENTITY`/`IDENTITY_FAILED` 상태가 필요하다.
 - [ ] **토큰 테넌트 표현** — 소속 배열 vs 단일 active-tenant(§7.2 대안). 테넌트 수 요건 확인 후 확정.
 - [ ] **N대 audience 전략** — 공유 aud vs token-exchange(다운스트림별 최소권한 토큰). P9a/P9e 선행.
 - [ ] **email 등 identity 필드 변경 동기화** — Keycloak 소유 필드와 IAM 프로필의 SoT 명확화.
