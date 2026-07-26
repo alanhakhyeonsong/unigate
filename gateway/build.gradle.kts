@@ -27,6 +27,12 @@ dependencies {
   // observability
   implementation(libs.spring.boot.starter.actuator)
   runtimeOnly(libs.micrometer.registry.prometheus)
+  // 분산 트레이싱. `implementation` 인 이유: 감사로그에 traceId 를 채우려고 `Tracer` 를 직접 주입받는다.
+  //
+  // 이 한 줄이 Tracer 빈을 만들고, 그게 SCG 의 GatewayTracingConfiguration
+  // (@ConditionalOnBean(Tracer))을 깨워 GatewayPropagatingSenderTracingObservationHandler 를 등록한다.
+  // → 다운스트림으로 나가는 프록시 요청에 traceparent 가 자동으로 실린다(직접 필터를 짤 필요 없음).
+  implementation(libs.micrometer.tracing.bridge.otel)
 
   // coroutine
   implementation(libs.kotlinx.coroutines.core)

@@ -7,6 +7,25 @@ spring:
   main:
     web-application-type: reactive
 
+  # ── Phase 4: Reactor 자동 컨텍스트 전파 ────────────────────────────────
+  # Servlet 은 요청당 스레드라 traceId 를 ThreadLocal(MDC)에 넣으면 요청 내내 유지됐다.
+  # WebFlux 는 연산자마다 스레드가 바뀌므로 MDC 가 그냥은 따라다니지 않는다
+  # → 로그에 traceId 가 **비거나 남의 요청 것이 찍힌다**.
+  #
+  # 기본값은 `limited` 로, `.handle()`/`.tap()` 같은 일부 연산자에서만 ThreadLocal 을 복원한다.
+  # `auto` 는 Reactor 의 Hooks.enableAutomaticContextPropagation() 을 켜서 모든 연산자 경계에서
+  # 복원한다. 대가는 연산자마다 붙는 복원 비용이므로 공짜가 아니다.
+  reactor:
+    context-propagation: auto
+
+  # ── Phase 4: RFC 9457(구 7807) Problem Detail ─────────────────────────
+  # 기본값이 false 라 켜지 않으면 502/504 가 Spring 기본 에러 본문(JSON: timestamp/path/status)으로 나간다.
+  # 켜면 ResponseStatusException 계열이 application/problem+json 으로 렌더링돼
+  # CB fallback(FallbackRoutes)·인증 실패(ProblemDetailAuthenticationHandlers)와 형식이 하나로 맞는다.
+  webflux:
+    problemdetails:
+      enabled: true
+
 server:
   shutdown: graceful
   port: 8080
@@ -64,6 +83,25 @@ management:
   metrics:
     tags:
       application: ${spring.application.name}
+
+  # ── Phase 4: 분산 트레이싱 ──────────────────────────────────────────────
+  # exporter 는 붙이지 않았다(수집 백엔드는 Phase 6). 지금 얻는 것은 세 가지다:
+  #   ① traceId/spanId 생성  ② 다운스트림으로 traceparent 전파(SCG 가 자동 수행)
+  #   ③ 로그·감사로그 상관관계
+  #
+  # ⚠️ 샘플링은 "저장 여부"가 아니라 **span 을 만들지 여부**다. 샘플링에서 빠진 요청은
+  # traceId 자체가 로그에 남지 않아 사후 추적이 불가능해진다. 그래서 감사·보안 목적이 큰
+  # 게이트웨이에서는 기본값 0.1(10%)을 그대로 쓰지 않고 환경별로 정한다.
+  # 운영에서 1.0 은 비용(수집·저장)이 크므로 Phase 6 에서 백엔드와 함께 조정한다.
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING_PROBABILITY:1.0}
+    propagation:
+      # 나갈 때 쓰는 형식. 기본값도 W3C 지만, 다운스트림과의 계약이라 명시해 고정한다.
+      produce: W3C
+      # 받을 때는 W3C 와 B3 계열을 모두 허용한다(기본값). 아직 B3 만 쓰는 레거시 클라이언트가
+      # 붙어도 trace 가 끊기지 않게 하기 위함이다.
+      consume: W3C,B3,B3_MULTI
 
 # Flyway: 스키마 마이그레이션(JDBC, 부팅 시 1회). 런타임 CRUD 는 R2DBC.
 # R2DBC 는 마이그레이션 기능이 없어 Flyway 를 JDBC 로 별도 구동한다.

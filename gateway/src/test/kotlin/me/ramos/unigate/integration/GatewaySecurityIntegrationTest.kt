@@ -100,16 +100,78 @@ class GatewaySecurityIntegrationTest {
   }
 
   @Test
-  fun `CSRF 토큰 없는 POST logout 은 403 으로 거부된다`() {
+  fun `CSRF 토큰 없는 POST logout 은 403 Problem Detail 로 거부된다`() {
     // 로그아웃은 상태를 바꾸는 요청이라 CSRF 로 보호된다(SecurityConfig 의 logout 설정).
     // 토큰 없이 POST /logout 하면 CsrfWebFilter 가 라우팅 이전에 403 으로 막는다.
     // (실제 로그아웃 성공 경로 — Keycloak end_session 왕복 — 은 브라우저 e2e 로 검증한다.)
+    //
+    // Phase 4: 403 도 problem+json 으로 통일된다(ProblemDetailAccessDeniedHandler).
+    // 403 은 로그인해도 해결되지 않으므로 **리다이렉트하지 않는다** — 302 를 주면 무한 로그인 루프가 된다.
     client
       .post()
       .uri("/logout")
       .exchange()
       .expectStatus()
       .isForbidden
+      .expectHeader()
+      .contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON)
+      .expectBody()
+      .jsonPath("$.reasonCode")
+      .isEqualTo("access_denied")
+  }
+
+  // ── Phase 4: 미인증 응답이 요청 성격에 따라 갈라지는가 ──────────────────────
+
+  @Test
+  fun `XHR 미인증 요청은 302 가 아니라 401 Problem Detail 과 loginUrl 을 받는다`() {
+    // 이 테스트가 지키는 것: fetch() 가 302 를 따라가 Keycloak 을 직접 호출하고 CORS 에러로
+    // 둔갑하는 사고(CLAUDE.md §6.1). 302 가 아니라 401 이어야 FE 가 원인을 알 수 있다.
+    client
+      .get()
+      .uri("/api/echo")
+      .header("Sec-Fetch-Mode", "cors")
+      .exchange()
+      .expectStatus()
+      .isUnauthorized
+      .expectHeader()
+      .contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON)
+      .expectBody()
+      .jsonPath("$.reasonCode")
+      .isEqualTo("authentication_required")
+      // FE 는 이 값으로 window.location 을 바꿔 **top-level 이동**을 일으킨다.
+      .jsonPath("$.loginUrl")
+      .isEqualTo("/oauth2/authorization/keycloak")
+      .jsonPath("$.status")
+      .isEqualTo(401)
+  }
+
+  @Test
+  fun `Accept 가 application_json 인 미인증 요청도 401 Problem Detail 을 받는다`() {
+    // Sec-Fetch-Mode 를 붙이지 않는 클라이언트(구형 브라우저·서버간 호출) 대비 폴백 경로.
+    client
+      .get()
+      .uri("/api/echo")
+      .accept(MediaType.APPLICATION_JSON)
+      .exchange()
+      .expectStatus()
+      .isUnauthorized
+      .expectHeader()
+      .contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON)
+  }
+
+  @Test
+  fun `브라우저 top-level 이동은 종전대로 302 로 Keycloak 에 보낸다`() {
+    // 401 도입이 브라우저 로그인 경로를 깨지 않았는지 확인한다(회귀 가드).
+    client
+      .get()
+      .uri("/api/echo")
+      .header("Sec-Fetch-Mode", "navigate")
+      .accept(MediaType.TEXT_HTML)
+      .exchange()
+      .expectStatus()
+      .is3xxRedirection
+      .expectHeader()
+      .valueMatches("Location", ".*/oauth2/authorization/keycloak")
   }
 
   @Test
