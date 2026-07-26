@@ -54,6 +54,8 @@ dependencies {
     add("testImplementation", it.findLibrary("archunit-junit5").get())
 
     add("testImplementation", it.findLibrary("spring-boot-starter-test").get())
+    // Resource Server 인가 경계 테스트(Phase 8f). Keycloak 없이 인증된 호출자를 흉내 낸다.
+    add("testImplementation", it.findLibrary("spring-security-test").get())
     add("testImplementation", it.findLibrary("kotlin-test-junit5").get())
     add("testImplementation", it.findLibrary("kotest-runner-junit5").get())
     add("testImplementation", it.findLibrary("kotest-assertions-core").get())

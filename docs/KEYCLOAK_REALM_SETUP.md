@@ -35,6 +35,7 @@ Keycloak **인스턴스는 공유**하고 **realm으로 격리**한다. 로컬 �
 | Client (audience 전용) | `unigate-downstream-demo` | 다운스트림 예시 앱. 토큰을 **검증하는** 주체 |
 | Client (service account) | `unigate-iam` | IAM 서비스. Keycloak **Admin API를 호출하는** 주체 (§4.7) |
 | Protocol Mapper | `downstream-audience` | access token `aud`에 다운스트림 clientId 주입 |
+| Protocol Mapper | `iam-audience` | access token `aud`에 `unigate-iam` 주입 — IAM Resource Server 검증용 (§4.8) |
 | Realm roles | `unigate-user`, `unigate-admin` | 인가 정책 골격 |
 | Group | `unigate-users` | `unigate-user` 역할 자동 부여 |
 | Users (local 전용) | `alice`, `bob` | 인가 성공/실패 케이스 |
@@ -237,6 +238,47 @@ IAM은 서로 다른 두 인증을 다룬다. 헷갈리면 설계가 무너진�
 - **관리 자격** = 이 client의 service account 토큰(`client_credentials`). Admin API 호출용.
 
 가입은 사용자 토큰이 아예 없는 상태이므로, IAM은 반드시 자기 자격증명을 따로 가져야 한다.
+
+### 4.8 IAM Audience Mapper (누락 시 GW→IAM 인증 라우트 401) — Phase 8f
+
+§4.4와 **같은 절차, 다른 대상**이다. IAM이 Resource Server가 되면서 relay된 사용자 토큰의 `aud`를
+검증하게 됐고, 그러려면 `aud`에 IAM이 들어 있어야 한다.
+
+`Clients` → `unigate-client` → `Client scopes` → `unigate-client-dedicated` → `Add mapper` → `By configuration` → **Audience**
+
+| 항목 | 값 |
+|---|---|
+| Name | `iam-audience` |
+| Included Client Audience | `unigate-iam` |
+| Add to access token | **ON** |
+| Add to ID token | OFF |
+
+적용 후 access token payload — `aud`가 **배열**이고 항목이 늘어난다:
+
+```json
+{
+  "iss": "https://<keycloak-host>/realms/test",
+  "aud": ["unigate-downstream-demo", "unigate-iam", "account"],
+  "azp": "unigate-client"
+}
+```
+
+#### 왜 매퍼를 게이트웨이 client에 붙이나
+
+`unigate-iam` 쪽에 붙이고 싶어지지만 **아무 효과가 없다.** Audience mapper는 *토큰을 발급받는*
+client의 dedicated scope에서 동작한다. 사용자 토큰을 발급받는 주체는 로그인 client인
+`unigate-client` 하나뿐이므로, 수신자가 몇 개든 매퍼는 전부 그쪽에 붙는다.
+
+#### 왜 audience 전용 client를 새로 만들지 않나
+
+`unigate-downstream-demo`는 순수 audience 이름표였지만(§4.3), IAM은 이미 실체가 있는 client다
+(§4.7의 service account). 수신자가 곧 IAM이므로 그 이름을 그대로 audience로 쓴다. 같은 client가
+"Admin API를 호출하는 주체"이면서 "사용자 토큰의 수신자"인 것은 모순이 아니다 — 두 토큰은 별개다.
+
+> ⚠️ **이 매퍼를 빠뜨렸을 때의 증상이 고약하다.** 로그인은 정상이고 `/api/**`도 정상인데
+> `/iam/profile` 같은 인증 라우트만 **전부 401**이다. 게이트웨이 로그에는 relay가 성공했다고 남고,
+> IAM 로그에도 스택트레이스가 없다. 토큰을 직접 디코드해 `aud`를 봐야 원인을 알 수 있다.
+> §6의 검증에서 `aud` 배열에 `unigate-iam`이 있는지 반드시 확인한다.
 
 ---
 

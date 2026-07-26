@@ -32,6 +32,10 @@ readonly AUDIENCE_MAPPER_NAME="downstream-audience"
 # 게이트웨이 로그인 client 와 **분리**한다 — 관리 자격증명이 유출돼도 로그인 흐름은 무사하고
 # 그 반대도 마찬가지다(blast radius 축소, IAM_PLATFORM_DECISION.md §14).
 readonly IAM_CLIENT_ID="unigate-iam"
+# IAM 을 **audience 로도** 쓴다 (Phase 8f). GW 가 relay 한 사용자 토큰의 `aud` 에 이 값이 없으면
+# IAM Resource Server 가 401 로 거부한다. audience 전용 client 를 따로 만들지 않는 이유는
+# 수신자가 곧 IAM 이고 그 client 가 이미 있기 때문이다.
+readonly IAM_AUDIENCE_MAPPER_NAME="iam-audience"
 readonly REALM_MANAGEMENT_CLIENT_ID="realm-management"
 # 최소권한: realm-admin 전체가 아니라 사용자 관리에 필요한 것만.
 # realm-admin 을 주면 client·realm 설정까지 바꿀 수 있어 과잉이다.
@@ -386,12 +390,19 @@ if step "IAM service account 역할 부여 (${IAM_SERVICE_ACCOUNT_ROLES[*]})"; t
 fi
 
 # ---------------------------------------------------------------------------
-# 4) Audience Mapper — 누락 시 다운스트림이 aud 검증에 실패한다
+# 4) Audience Mapper — 누락 시 수신 서비스가 aud 검증에 실패한다
 # ---------------------------------------------------------------------------
-if step "audience mapper '$AUDIENCE_MAPPER_NAME' upsert (aud += $DOWNSTREAM_CLIENT_ID)"; then
+# 매퍼는 **게이트웨이 로그인 client 에** 붙는다. 토큰을 발급받는 주체가 그쪽이기 때문이다
+# (수신자 client 에 붙이면 아무 효과가 없다 — 그 client 는 토큰을 발급받지 않는다).
+#
+# 한 토큰에 audience 가 여럿인 것은 정상이다. 각 수신 서비스는 "내 이름이 aud 에 있는가"만 본다.
+upsert_audience_mapper() {
+  local mapper_name="$1" audience_client="$2"
+  local mapper_payload existing_mapper_id
+
   mapper_payload=$(jq -n \
-    --arg name "$AUDIENCE_MAPPER_NAME" \
-    --arg audience "$DOWNSTREAM_CLIENT_ID" \
+    --arg name "$mapper_name" \
+    --arg audience "$audience_client" \
     '{
        name: $name,
        protocol: "openid-connect",
@@ -405,16 +416,26 @@ if step "audience mapper '$AUDIENCE_MAPPER_NAME' upsert (aud += $DOWNSTREAM_CLIE
      }')
 
   existing_mapper_id=$(api GET "/admin/realms/$REALM/clients/$GATEWAY_UUID/protocol-mappers/models" \
-    | jq -r --arg n "$AUDIENCE_MAPPER_NAME" 'map(select(.name == $n)) | .[0].id // empty')
+    | jq -r --arg n "$mapper_name" 'map(select(.name == $n)) | .[0].id // empty')
 
   if [[ -n "$existing_mapper_id" ]]; then
     api PUT "/admin/realms/$REALM/clients/$GATEWAY_UUID/protocol-mappers/models/$existing_mapper_id" \
       "$(printf '%s' "$mapper_payload" | jq --arg id "$existing_mapper_id" '. + {id: $id}')" >/dev/null
-    ok "audience mapper 갱신"
+    ok "audience mapper '$mapper_name' 갱신 (aud += $audience_client)"
   else
     api POST "/admin/realms/$REALM/clients/$GATEWAY_UUID/protocol-mappers/models" "$mapper_payload" >/dev/null
-    ok "audience mapper 생성"
+    ok "audience mapper '$mapper_name' 생성 (aud += $audience_client)"
   fi
+}
+
+if step "audience mapper '$AUDIENCE_MAPPER_NAME' upsert (aud += $DOWNSTREAM_CLIENT_ID)"; then
+  upsert_audience_mapper "$AUDIENCE_MAPPER_NAME" "$DOWNSTREAM_CLIENT_ID"
+fi
+
+# Phase 8f — IAM Resource Server 용. 이게 없으면 GW→IAM 인증 라우트가 **전부 401** 이고,
+# 응답만 봐서는 원인이 보이지 않는다(토큰을 디코드해 aud 를 눈으로 봐야 안다).
+if step "audience mapper '$IAM_AUDIENCE_MAPPER_NAME' upsert (aud += $IAM_CLIENT_ID)"; then
+  upsert_audience_mapper "$IAM_AUDIENCE_MAPPER_NAME" "$IAM_CLIENT_ID"
 fi
 
 # ---------------------------------------------------------------------------
@@ -570,7 +591,9 @@ curl -s -X POST $ISSUER_URI/protocol/openid-connect/token \\
   | python3 -c 'import sys,base64,json; p=sys.stdin.read().strip().split(".")[1]; print(json.dumps(json.loads(base64.urlsafe_b64decode(p+"="*(-len(p)%4)))))' \\
   | jq '{iss, aud, azp}'
 
-# 합격 기준: 마지막 명령의 aud 배열에 "$DOWNSTREAM_CLIENT_ID" 포함
+# 합격 기준: 마지막 명령의 aud 배열에 "$DOWNSTREAM_CLIENT_ID" 와 "$IAM_CLIENT_ID" 가 **둘 다** 포함
+#   - "$DOWNSTREAM_CLIENT_ID" 누락 -> 다운스트림이 401 (Phase 1)
+#   - "$IAM_CLIENT_ID" 누락        -> GW→IAM 인증 라우트가 전부 401 (Phase 8f)
 
 # ── IAM service account 검증 (Phase 8c) ──────────────────────────────
 # 토큰이 발급돼도 역할이 없으면 Admin API 가 403 을 준다. 토큰과 권한을 **따로** 확인한다.

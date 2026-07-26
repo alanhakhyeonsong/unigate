@@ -185,8 +185,10 @@ Reactive 스택에서 **컴파일은 되지만 부하 시 터지는** 것들이�
 | 스택 | **WebFlux + SCG** (Netty) | **Servlet MVC + JPA + Virtual Thread** |
 | DB | R2DBC (논블로킹) | JPA / JDBC (**블로킹이 정상**) |
 | UseCase | **`suspend` 함수** | 평범한 블로킹 함수 |
-| 어댑터 | `gatewayIn` · `keycloakOut` · `r2dbcOut` · `loggingOut` | `iamIn` · `keycloakAdminOut` · `jpaOut` |
-| Keycloak 접점 | **OIDC 표준만**(discovery·JWKS·end_session·token) | **Admin API**(service account, 봉인) |
+| 어댑터 | `gatewayIn` · `keycloakOut` · `r2dbcOut` · `loggingOut` | `iamIn` · `schedulerIn` · `keycloakAdminOut` · `jpaOut` · `jacksonOut` |
+| Keycloak 접점 | **OIDC 표준만**(discovery·JWKS·end_session·token) | **Admin API**(service account, 봉인) + **JWKS**(Resource Server, 아래) |
+| 인증 역할 | OAuth2 **Client**(BFF) — 로그인시키고 세션에 토큰 보관 | **Resource Server** — relay 된 Bearer 검증만, 세션 없음(STATELESS) |
+| CSRF | **활성** (쿠키로 인증하므로 공격 표면이 실재) | **비활성** (쿠키를 쓰지 않아 전제가 성립 안 함) |
 
 **왜 스택이 다른가:** WebFlux 강제는 **SCG 제약**이다(§1.3). `iam`은 SCG가 아니므로 자유롭고, 워크로드가
 VT에 더 맞는다 — Keycloak Admin client는 블로킹이고, 관리 도메인 CRUD는 JPA의 관계·트랜잭션이 낫다.
@@ -194,6 +196,12 @@ VT에 더 맞는다 — Keycloak Admin client는 블로킹이고, 관리 도메�
 
 > `valkeyOut`은 세션을 Spring Session이 전부 처리해 커스텀 어댑터가 필요 없어 **제거**했다
 > (빈 디렉토리는 "미완성"이라는 잘못된 신호를 준다). 필요해지면 그때 만든다.
+
+> **`iam` 의 JWKS 사용은 D7 위반이 아니다** (Phase 8f). D7이 `iam` 에 몰아준 것은 **Admin API 봉인**이고,
+> 막은 것은 게이트웨이가 Admin API 를 쓰는 것이다. 반대 방향 — Resource Server 가 **자기에게 온 토큰을
+> 검증하려고** JWKS 를 읽는 것 — 은 O2 에서 다운스트림에도 허용한 표준 동작이다
+> (`IAM_PLATFORM_DECISION.md` §9). 즉 "IAM 은 Keycloak 에 Admin 으로만 접근한다" 가 아니라
+> **"Keycloak 을 Admin 으로 쓰는 것은 IAM 뿐이다"** 가 정확한 문장이다.
 
 게이트웨이의 Keycloak 어댑터는 **OIDC 표준(discovery·JWKS)에만** 의존한다. **Admin API는 `iam` 소관**이며
 게이트웨이에 넣지 않는다(`IAM_PLATFORM_DECISION.md` D7).

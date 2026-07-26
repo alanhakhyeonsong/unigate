@@ -174,6 +174,95 @@ class GatewaySecurityIntegrationTest {
       .valueMatches("Location", ".*/oauth2/authorization/keycloak")
   }
 
+  // ── Phase 8f: IAM 라우트 — 공개(가입)와 인증(그 외)이 실제로 갈라지는가 ──────────────
+
+  @Test
+  fun `가입 경로는 인증 없이 라우팅까지 통과한다`() {
+    // 이 테스트의 요점은 상태코드가 503 이라는 것이 아니라 **401·302 가 아니라는 것**이다.
+    // 503 은 CB fallback(iam_unavailable)이 낸 것이고, 그 지점에 도달했다는 것은
+    // security 를 통과해 iam-public 라우트로 프록시를 시도했다는 뜻이다.
+    // (test 프로파일의 iam.uri 는 존재하지 않는 :1 이다.)
+    //
+    // ⚠️ 여기서 CSRF 도 함께 검증된다. CSRF 예외를 빼면 이 POST 는 IAM 에 닿기도 전에 403 이다.
+    client
+      .post()
+      .uri("/iam/register")
+      .contentType(MediaType.APPLICATION_JSON)
+      .bodyValue("""{"email":"a@example.local","displayName":"a","firstName":"a","lastName":"a"}""")
+      .exchange()
+      .expectStatus()
+      .isEqualTo(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE)
+      .expectBody()
+      .jsonPath("$.reasonCode")
+      .isEqualTo("iam_unavailable")
+  }
+
+  @Test
+  fun `IAM 인증 라우트는 미인증 XHR 에 401 을 준다`() {
+    // 공개로 열린 것은 /iam/register 하나뿐이다. 나머지 IAM 경로가 함께 열리면
+    // 프로필·관리 API 가 통째로 무인증이 된다 — 그 회귀를 막는다.
+    client
+      .get()
+      .uri("/iam/profile")
+      .header("Sec-Fetch-Mode", "cors")
+      .exchange()
+      .expectStatus()
+      .isUnauthorized
+      .expectBody()
+      .jsonPath("$.reasonCode")
+      .isEqualTo("authentication_required")
+  }
+
+  @Test
+  fun `가입 경로와 한 글자라도 다른 GET 은 인증을 요구한다`() {
+    // permitAll·CSRF 예외 모두 **정확한 경로 매칭**이다. 접두사가 같다고 열리지 않는다
+    // (`/iam/register-admin` 같은 경로가 나중에 생겨도 자동으로 공개되지 않는다).
+    client
+      .get()
+      .uri("/iam/registerX")
+      .header("Sec-Fetch-Mode", "cors")
+      .exchange()
+      .expectStatus()
+      .isUnauthorized
+  }
+
+  @Test
+  fun `가입 경로가 아닌 POST 는 CSRF 에서 먼저 막힌다`() {
+    // 실측으로 확인한 순서다. `CsrfWebFilter` 는 인가 판정보다 **앞**에서 돌기 때문에,
+    // 미인증 POST 는 401 이 아니라 **403** 이 된다.
+    //
+    // 처음엔 401 을 기대했다가 403 을 받고 알게 된 사실이다. 방어 자체는 더 이른 단계에서
+    // 성립하므로 문제가 아니지만, "미인증 = 401" 이라고 단정하면 진단을 헛짚는다 —
+    // 403 을 보고 권한 설정을 뒤지게 되는데 실제 원인은 CSRF 토큰 부재다.
+    client
+      .post()
+      .uri("/iam/registerX")
+      .header("Sec-Fetch-Mode", "cors")
+      .exchange()
+      .expectStatus()
+      .isForbidden
+      .expectBody()
+      .jsonPath("$.reasonCode")
+      .isEqualTo("access_denied")
+  }
+
+  @Test
+  fun `IAM CB fallback 은 다운스트림과 다른 reasonCode 를 준다`() {
+    // 무엇이 죽었는지 구분할 수 있어야 한다. 둘을 같은 코드로 합치면 가입 실패와
+    // 제품 API 실패가 대시보드에서 구분되지 않는다.
+    client
+      .get()
+      .uri("/fallback/iam")
+      .exchange()
+      .expectStatus()
+      .isEqualTo(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE)
+      .expectHeader()
+      .contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON)
+      .expectBody()
+      .jsonPath("$.reasonCode")
+      .isEqualTo("iam_unavailable")
+  }
+
   @Test
   fun `로그인 시작 요청은 PKCE(S256)를 붙여 Keycloak 인가 엔드포인트로 리다이렉트한다`() {
     // confidential client 에는 Spring 이 PKCE 를 자동 적용하지 않는다 → SecurityConfig 의

@@ -24,6 +24,11 @@ import org.springframework.security.web.server.authentication.logout.SecurityCon
 import org.springframework.security.web.server.authentication.logout.ServerLogoutHandler
 import org.springframework.security.web.server.authentication.logout.ServerLogoutSuccessHandler
 import org.springframework.security.web.server.authorization.ServerAccessDeniedHandler
+import org.springframework.security.web.server.csrf.CsrfWebFilter
+import org.springframework.security.web.server.util.matcher.AndServerWebExchangeMatcher
+import org.springframework.security.web.server.util.matcher.NegatedServerWebExchangeMatcher
+import org.springframework.security.web.server.util.matcher.ServerWebExchangeMatcher
+import org.springframework.security.web.server.util.matcher.ServerWebExchangeMatchers
 
 /**
  * 게이트웨이 인증 정책 — Authorization Code Flow (BFF).
@@ -122,7 +127,10 @@ class SecurityConfig(
       // `CsrfWebFilter` 가 자체 handler(기본값 `HttpStatusServerAccessDeniedHandler`)를 직접 호출하기
       // 때문이다. 실제로 여기를 빠뜨렸을 때 CSRF 403 만 `text/plain: Access Denied` 로 나갔다.
       // 같은 핸들러를 명시적으로 다시 꽂아 403 응답 형식을 하나로 맞춘다.
-      .csrf { csrf -> csrf.accessDeniedHandler(accessDeniedHandler) }
+      .csrf { csrf ->
+        csrf.accessDeniedHandler(accessDeniedHandler)
+        csrf.requireCsrfProtectionMatcher(csrfProtectionMatcher())
+      }
       // CSRF 는 **기본값(활성)** 으로 되돌렸다. 이전 단계의 `.csrf { it.disable() }` 는
       // 인증이 없던 시기의 임시 조치였다. 세션 쿠키로 인증하는 순간 브라우저는 교차 사이트
       // 요청에도 쿠키를 자동으로 실어 보내므로 CSRF 가 실제 공격 표면이 된다.
@@ -134,6 +142,37 @@ class SecurityConfig(
       //   WebFlux 에서는 `CsrfToken` 이 지연 평가돼 응답에 쿠키가 실리지 않는 함정이 있다
       //   (구독을 강제하는 WebFilter 가 별도로 필요하다).
       .build()
+
+  /**
+   * CSRF 보호 대상 판정 — 기본 규칙(안전하지 않은 메서드)에서 **공개 가입만 제외**한다 (Phase 8f).
+   *
+   * ## 제외하지 않으면 무슨 일이 벌어지나
+   * `CsrfWebFilter` 의 기본 매처는 인증 여부와 무관하게 POST/PUT/PATCH/DELETE 를 전부 잡는다.
+   * 그런데 가입 요청자는 **세션도 CSRF 토큰도 없는** 상태다. 토큰을 실을 방법이 없으니
+   * `POST /iam/register` 는 IAM 에 닿기도 전에 **항상 403** 이 된다. 컴파일·기동은 정상이고
+   * 브라우저에서 가입 버튼을 눌러야 드러난다.
+   *
+   * ## 제외해도 되는 근거
+   * CSRF 는 "브라우저가 **자동으로 실어 보내는 인증 정보**(세션 쿠키)를 공격자가 빌려 쓰는 것"을
+   * 막는 방어다. 이 엔드포인트는 그 인증 정보를 **아예 쓰지 않는다** — 요청 본문만으로 판단하므로
+   * 피해자의 권한으로 무언가를 대신 수행시킬 수 없다. 공격자가 할 수 있는 일은 자기 손으로도
+   * 할 수 있는 "가입 요청 보내기"뿐이고, 그건 rate limit 의 영역이다.
+   *
+   * ⚠️ 그래서 **제외 대상은 공개 라우트 하나로 한정한다.** `/iam` 하위 전체를 빼면 세션 쿠키로
+   * 인증되는 프로필·관리 API 가 CSRF 에 그대로 노출된다.
+   *
+   * (KDoc 안에 `/iam` + 와일드카드 두 개를 그대로 적으면 Kotlin 이 **중첩 블록 주석 시작**으로
+   * 읽어 파일 끝까지 주석이 되어버린다. 그래서 이 문서에서는 풀어 쓴다.)
+   */
+  private fun csrfProtectionMatcher(): ServerWebExchangeMatcher =
+    AndServerWebExchangeMatcher(
+      // 기본 규칙(= 안전하지 않은 메서드만)을 그대로 상속한다. 직접 메서드 목록을 나열하면
+      // Spring Security 가 기본값을 바꿨을 때 따라가지 못한다.
+      CsrfWebFilter.DEFAULT_CSRF_MATCHER,
+      NegatedServerWebExchangeMatcher(
+        ServerWebExchangeMatchers.pathMatchers(GatewayRouteConfig.IAM_PUBLIC_REGISTER_PATH),
+      ),
+    )
 
   /**
    * Authorization Request 에 PKCE(`code_challenge` / `code_challenge_method=S256`)를 붙인다.
@@ -228,6 +267,13 @@ class SecurityConfig(
         // CB fallback — 인증된 /api 요청이 forward 로 도달하지만, 직접 접근해도 503 만 반환하므로
         // 공개로 둔다(민감정보 없음). 인증 필요로 두면 forward 시 재인증에 걸릴 수 있다.
         "/fallback/**",
+        // Phase 8f: IAM 가입. 사용자 토큰이 아직 없는 유일한 IAM 유스케이스라 인증을 요구할 수 없다
+        // (IAM_PLATFORM_DECISION.md D4 보강). 대신 게이트웨이에서 **강한 rate limit** 을 건다
+        // (GatewayRouteConfig 의 iam-public 라우트 + RateLimitConfig.registrationRateLimiter).
+        //
+        // ⚠️ 여기에 `/iam/**` 를 넣으면 프로필·관리 API 까지 통째로 무인증이 된다. 경로는
+        // GatewayRouteConfig.IAM_PUBLIC_REGISTER_PATH 와 **한 글자도 다르지 않게** 유지한다.
+        GatewayRouteConfig.IAM_PUBLIC_REGISTER_PATH,
       )
 
     /** local 프로파일에서만 열리는 검증용 프로브 (`SessionProbeConfig`, `AuthProbeConfig`). */
