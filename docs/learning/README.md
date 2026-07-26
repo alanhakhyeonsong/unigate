@@ -24,6 +24,7 @@
 | [12](12-observability-audit-r2dbc.md) | 관측성 + 감사로그 (R2DBC 첫 사용) | 4 | 학습중 | R2DBC 엔 영속성 컨텍스트가 없어 명시 INSERT + 논블로킹. WebFlux 는 인증 이벤트 미발행 → 커스텀 핸들러 |
 | [13](13-distributed-tracing-reactor-context.md) | 분산 트레이싱 — traceparent 전파와 Reactor 컨텍스트 | 4 | 학습중 | SCG 가 traceparent 를 자동 주입. 단 `mono { }` 안에서 읽은 traceId 는 **항상 null** — 복원은 Reactor 연산자 경계까지다 |
 | [14](14-problem-detail-xhr-auth-boundary.md) | RFC 9457 Problem Detail 과 XHR 인증 경계 | 4 | 학습중 | 미인증에 무조건 302 를 주면 SPA 에선 CORS 에러로 둔갑. `Sec-Fetch-Mode` 로 갈라 401 + loginUrl |
+| [15](15-archunit-dependency-guard.md) | ArchUnit — 아키텍처 규칙을 문서에서 테스트로 | 5 | 학습중 | 규칙을 빌드가 막게 한다. 단 **통과만 하는 가드는 무의미** — 일부러 위반을 넣어 검증해야 한다 |
 
 상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
 
@@ -59,6 +60,12 @@
 - [x] **Resilience4j (reactive)** — Circuit Breaker · Bulkhead · Timeout 의 상호작용 → [11](11-resilience-ratelimit-circuitbreaker.md)
 - [x] **분산 트레이싱 · Reactor 컨텍스트 전파** → [13](13-distributed-tracing-reactor-context.md)
 - [x] **RFC 9457 Problem Detail · XHR 인증 경계** → [14](14-problem-detail-xhr-auth-boundary.md)
+
+### Phase 5 — 의존성 가드 · 교체가능성
+
+- [x] **ArchUnit 으로 아키텍처 테스트** → [15](15-archunit-dependency-guard.md)
+- [x] **포트 교체가능성** — 구현이 하나뿐인 인터페이스는 추상화가 검증되지 않은 상태다 → [15](15-archunit-dependency-guard.md) §4
+- [ ] **`@ConditionalOnProperty` 로 빈 선택** — 조건부 자동설정의 우선순위·디버깅 방법
 
 ### 참고 (직접 쓰지는 않지만 이해가 필요한 것)
 

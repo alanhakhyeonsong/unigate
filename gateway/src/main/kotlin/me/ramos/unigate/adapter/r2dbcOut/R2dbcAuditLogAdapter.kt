@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import kotlinx.coroutines.reactor.awaitSingle
 import me.ramos.unigate.application.audit.port.outbound.SaveAuditEventOutPort
 import me.ramos.unigate.domain.audit.model.AuditEvent
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.r2dbc.core.DatabaseClient
 import org.springframework.stereotype.Component
 
@@ -22,8 +23,14 @@ import org.springframework.stereotype.Component
  * ## JSONB
  * `detail` 은 도메인에선 Map 이지만 DB 컬럼은 jsonb 다. 드라이버 고유 Json 타입에 컴파일 의존하지
  * 않으려고 문자열로 직렬화한 뒤 SQL 에서 `CAST(:detail AS jsonb)` 로 캐스팅한다(어댑터가 저장형식 봉인).
+ *
+ * ## 기본 구현이다 (Phase 5)
+ * `unigate.audit.sink` 를 설정하지 않으면 이 어댑터가 선택된다(`matchIfMissing = true`).
+ * 감사는 조회·보존이 필요하므로 DB 가 기본이어야 하고, 설정을 빠뜨렸을 때 감사가 **조용히 로그로만**
+ * 남는 상황을 막기 위해서다. 대안 구현은 [me.ramos.unigate.adapter.loggingOut.LoggingAuditLogAdapter].
  */
 @Component
+@ConditionalOnProperty(name = ["unigate.audit.sink"], havingValue = "r2dbc", matchIfMissing = true)
 class R2dbcAuditLogAdapter(
   private val databaseClient: DatabaseClient,
   private val objectMapper: ObjectMapper,
