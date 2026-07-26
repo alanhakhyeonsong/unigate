@@ -68,7 +68,13 @@ management:
         readiness:
           include: readinessState
 
-# 라우트 대상(실제 프록시는 발생하지 않음 — 미인증은 라우팅 전에 차단됨).
+# 라우트 대상.
+# demo-uri 는 실제 프록시가 발생하지 않는다 — 미인증 /api 는 라우팅 전에 차단되기 때문.
+# 반면 iam.uri 는 **실제로 호출된다**: /iam/register 는 공개 경로라 security 를 통과해 라우팅까지
+# 도달한다. 존재하지 않는 :1 이라 연결이 실패하고, CB fallback 이 503 을 돌려준다 —
+# 그 503 자체가 "security 를 통과해 iam 라우트로 갔다"는 증거다(401 이었다면 막힌 것).
 unigate:
   downstream:
     demo-uri: http://localhost:1
+  iam:
+    uri: http://localhost:1

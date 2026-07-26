@@ -21,19 +21,43 @@ import org.springframework.web.reactive.function.server.ServerResponse
  * 스레드/커넥션이 고갈되고 장애가 전파된다. CB 는 빠르게 실패시켜 그 전파를 끊는다(bulkhead 효과).
  *
  * 어떤 HTTP 메서드로 forward 되든 응답하도록 path 서술자만 쓴다(메서드 무관).
+ *
+ * ## 왜 서비스마다 fallback 을 따로 두나 (Phase 8f)
+ * `reasonCode` 는 FE·온콜이 **무엇이 죽었는지** 구분하는 신호다. IAM 장애와 제품 다운스트림 장애를
+ * 하나의 `downstream_unavailable` 로 합치면, 가입이 실패했는데 대시보드에는 "다운스트림 장애"로만
+ * 남아 원인 서비스를 좁힐 수 없다. CB 인스턴스도 `downstream`/`iam` 으로 분리돼 있으므로
+ * (한쪽 장애가 다른 쪽 회로를 열지 않는다) 응답도 같은 입도로 나누는 것이 일관된다.
  */
 @Configuration
 class FallbackRoutes {
   @Bean
   fun downstreamFallbackRouter(): RouterFunction<ServerResponse> =
-    RouterFunctions.route(RequestPredicates.path(FALLBACK_PATH)) {
-      val problem =
-        ProblemDetail.forStatusAndDetail(
-          HttpStatus.SERVICE_UNAVAILABLE,
-          "다운스트림 서비스가 일시적으로 응답하지 않습니다. 잠시 후 다시 시도하세요.",
-        )
-      problem.title = "Downstream Unavailable"
-      problem.setProperty("reasonCode", "downstream_unavailable")
+    unavailableRoute(
+      path = DOWNSTREAM_FALLBACK_PATH,
+      title = "Downstream Unavailable",
+      reasonCode = "downstream_unavailable",
+      detail = "다운스트림 서비스가 일시적으로 응답하지 않습니다. 잠시 후 다시 시도하세요.",
+    )
+
+  @Bean
+  fun iamFallbackRouter(): RouterFunction<ServerResponse> =
+    unavailableRoute(
+      path = IAM_FALLBACK_PATH,
+      title = "IAM Unavailable",
+      reasonCode = "iam_unavailable",
+      detail = "IAM 서비스가 일시적으로 응답하지 않습니다. 잠시 후 다시 시도하세요.",
+    )
+
+  private fun unavailableRoute(
+    path: String,
+    title: String,
+    reasonCode: String,
+    detail: String,
+  ): RouterFunction<ServerResponse> =
+    RouterFunctions.route(RequestPredicates.path(path)) {
+      val problem = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, detail)
+      problem.title = title
+      problem.setProperty("reasonCode", reasonCode)
       ServerResponse
         .status(HttpStatus.SERVICE_UNAVAILABLE)
         .contentType(MediaType.APPLICATION_PROBLEM_JSON)
@@ -41,6 +65,7 @@ class FallbackRoutes {
     }
 
   companion object {
-    private const val FALLBACK_PATH = "/fallback/downstream"
+    private const val DOWNSTREAM_FALLBACK_PATH = "/fallback/downstream"
+    private const val IAM_FALLBACK_PATH = "/fallback/iam"
   }
 }

@@ -76,6 +76,9 @@ spring-boot-starter-data-jpa = { module = "org.springframework.boot:spring-boot-
 
 # --- Testing ---
 spring-boot-starter-test = { module = "org.springframework.boot:spring-boot-starter-test", version.ref = "spring-boot" }
+# Resource Server 슬라이스 테스트용 — `jwt()` post-processor 로 **실제 Keycloak 없이** 인증된 요청을
+# 흉내 낸다. 버전은 Boot BOM(spring-security-bom)이 관리한다.
+spring-security-test = { module = "org.springframework.security:spring-security-test" }
 kotlin-test-junit5 = { module = "org.jetbrains.kotlin:kotlin-test-junit5", version.ref = "kotlin" }
 kotest-runner-junit5 = { module = "io.kotest:kotest-runner-junit5", version.ref = "kotest" }
 kotest-assertions-core = { module = "io.kotest:kotest-assertions-core", version.ref = "kotest" }

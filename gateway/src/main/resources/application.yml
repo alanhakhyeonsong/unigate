@@ -35,6 +35,10 @@ unigate:
     # Phase 1 검증용 샘플 다운스트림(samples/downstream-demo, 커밋 제외).
     # 환경별로 실제 백엔드 주소로 교체된다.
     demo-uri: ${DOWNSTREAM_DEMO_URI:http://localhost:8081}
+  iam:
+    # Phase 8f — IAM 서비스(별도 모듈, Servlet MVC + JPA + VT). 로컬 기본 포트는 8090.
+    # 게이트웨이 입장에서는 그냥 또 하나의 프록시 대상이다(IAM_PLATFORM_DECISION.md D4 모델 A).
+    uri: ${IAM_URI:http://localhost:8090}
   keycloak:
     # Phase 2 TokenVerifier(JWKS 로컬 검증)용. 실제 issuer 는 KEYCLOAK_ISSUER_URI 로 주입한다.
     # 디코더는 지연 로딩이라 이 값이 부팅을 막지 않는다(첫 검증 시점에 JWKS 조회).
@@ -46,6 +50,15 @@ unigate:
     replenish-rate: ${RATELIMIT_REPLENISH_RATE:5}   # 초당 보충 토큰(정상 지속 처리율)
     burst-capacity: ${RATELIMIT_BURST_CAPACITY:10}  # 버킷 최대(순간 버스트 허용)
     requested-tokens: ${RATELIMIT_REQUESTED_TOKENS:1}
+    # Phase 8f — 가입(POST /iam/register) 전용. 미인증 공개 쓰기 엔드포인트라 훨씬 엄격하다.
+    # replenish-rate 가 Int 라 "초당 1회 미만"을 직접 못 쓴다 → requested-tokens 를 키워 표현한다.
+    #   1토큰/초 보충 · 요청당 5토큰 소비  ⇒ 지속 분당 12회
+    #   버킷 15토큰                        ⇒ 연속 3건까지 즉시 허용
+    # ⚠️ burst-capacity < requested-tokens 로 두면 모든 가입이 429 다(RateLimitConfig 가 부팅 시 거부).
+    register:
+      replenish-rate: ${RATELIMIT_REGISTER_REPLENISH_RATE:1}
+      burst-capacity: ${RATELIMIT_REGISTER_BURST_CAPACITY:15}
+      requested-tokens: ${RATELIMIT_REGISTER_REQUESTED_TOKENS:5}
 
 # Phase 3 Resilience — 다운스트림 호출 Circuit Breaker + Timeout.
 resilience4j:
@@ -58,10 +71,25 @@ resilience4j:
         failure-rate-threshold: 50            # 실패율 50% 초과 시 open
         wait-duration-in-open-state: 10s      # open 유지 시간(이후 half-open 시도)
         permitted-number-of-calls-in-half-open-state: 3
+      # Phase 8f — IAM 은 **회로를 따로 둔다.** 같은 인스턴스를 공유하면 제품 다운스트림 장애가
+      # IAM 회로까지 열어 가입·프로필이 함께 죽는다(장애 격리 실패). 서비스별 CB 가 원칙이다.
+      iam:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
   timelimiter:
     instances:
       downstream:
         timeout-duration: 2s                  # 다운스트림 2초 초과 시 실패 처리 → fallback
+        cancel-running-future: true
+      # IAM 은 2초로 잡으면 위험하다. 가입 1건이 Keycloak Admin 왕복(service account 토큰 발급이
+      # 캐시 미스면 2회)을 포함하고, VT 라 느린 요청이 스레드를 잡아먹지도 않는다.
+      # 게이트웨이가 먼저 끊으면 IAM 은 계속 처리해 **사용자에겐 실패인데 계정은 생기는** 상태가 된다.
+      iam:
+        timeout-duration: 5s
         cancel-running-future: true
 
 # graceful shutdown drain 시간

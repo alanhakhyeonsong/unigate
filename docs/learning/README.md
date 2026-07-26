@@ -28,6 +28,7 @@
 | [16](16-virtual-thread-vs-reactive-two-modules.md) | 한 저장소에 Reactive와 Virtual Thread를 함께 두기 | 8 | 학습중 | "VT 금지"는 원칙이 아니라 **SCG 제약의 파생**이었다. 앱을 나누면 각자 자기 모델을 온전히 쓴다 |
 | [17](17-service-account-and-idempotent-admin-api.md) | service account 토큰과 멱등한 Admin API 호출 | 8 | 학습중 | 토큰이 **두 종류**다(사용자 JWT ≠ 관리 자격). outbox 재시도 대비 멱등 필수, VT 라 `ReentrantLock` |
 | [18](18-outbox-worker-multi-instance.md) | 다중 인스턴스 outbox 워커 — SKIP LOCKED와 트랜잭션 경계 | 8 | 학습중 | 중복을 막는 건 스케줄러가 아니라 **DB 행 잠금**. 분산 락은 오히려 병목. 워커가 죽으면 롤백으로 자동 인계 |
+| [19](19-gateway-iam-route-and-registration-rate-limit.md) | GW→IAM 프록시 라우트 — 공개/인증 분리와 가입 rate limit | 8 | 학습중 | 접두사 하나를 둘로 쪼개면 순서·CSRF·rate limit·audience 가 동시에 문제가 된다. 전부 기동으로는 안 드러난다 |
 
 상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
 
@@ -76,6 +77,8 @@
 - [x] **service account · 멱등 Admin API** → [17](17-service-account-and-idempotent-admin-api.md)
 - [x] **outbox 패턴 · 다중 인스턴스 워커** → [18](18-outbox-worker-multi-instance.md)
 - [x] **JPA 엔티티 ↔ 도메인 모델 매핑** — 분리 비용을 실제로 치러봤다 → [18](18-outbox-worker-multi-instance.md) (`JpaUserProfileAdapter`)
+- [x] **GW→IAM 프록시 라우트 · 공개/인증 분리 · 가입 rate limit** → [19](19-gateway-iam-route-and-registration-rate-limit.md)
+- [x] **Resource Server 로서의 IAM** — 같은 요청이 경계를 넘으며 세션 쿠키 → Bearer 로 인증이 교체된다 → [19](19-gateway-iam-route-and-registration-rate-limit.md) §3
 - [ ] **VT pinning** — `ReentrantLock` 으로 예방했으나 **실측 여전히 미완**. HikariCP 를 태우게 됐으니 `-Djdk.tracePinnedThreads=full` 로 확인 가능한 조건은 갖춰졌다
 - [ ] **Spring 트랜잭션 전파** — `REQUIRES_NEW` 로 건별 커밋을 만들었는데, 전파 옵션별 동작을 정리한 적은 없다
 
