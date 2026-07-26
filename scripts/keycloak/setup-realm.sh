@@ -28,6 +28,15 @@ readonly GATEWAY_CLIENT_ID="unigate-client"
 readonly DOWNSTREAM_CLIENT_ID="unigate-downstream-demo"
 readonly AUDIENCE_MAPPER_NAME="downstream-audience"
 
+# IAM 서비스 전용 관리 client (Phase 8c).
+# 게이트웨이 로그인 client 와 **분리**한다 — 관리 자격증명이 유출돼도 로그인 흐름은 무사하고
+# 그 반대도 마찬가지다(blast radius 축소, IAM_PLATFORM_DECISION.md §14).
+readonly IAM_CLIENT_ID="unigate-iam"
+readonly REALM_MANAGEMENT_CLIENT_ID="realm-management"
+# 최소권한: realm-admin 전체가 아니라 사용자 관리에 필요한 것만.
+# realm-admin 을 주면 client·realm 설정까지 바꿀 수 있어 과잉이다.
+readonly IAM_SERVICE_ACCOUNT_ROLES=("manage-users" "view-users" "query-users")
+
 readonly ROLE_USER="unigate-user"
 readonly ROLE_ADMIN="unigate-admin"
 readonly GROUP_USERS="unigate-users"
@@ -307,12 +316,73 @@ downstream_client_payload=$(jq -n \
      webOrigins: []
    }')
 
+# IAM 서비스 관리 client — 로그인 흐름에 참여하지 않는다(standardFlow=false).
+# service account 로만 Keycloak Admin API 를 호출한다.
+iam_client_payload=$(jq -n \
+  --arg clientId "$IAM_CLIENT_ID" \
+  '{
+     clientId: $clientId,
+     name: "unigate IAM Service (admin)",
+     description: "IAM 서비스의 Keycloak Admin API 접근용. service account 전용이며 로그인에 쓰지 않는다.",
+     enabled: true,
+     protocol: "openid-connect",
+     publicClient: false,
+     standardFlowEnabled: false,
+     implicitFlowEnabled: false,
+     directAccessGrantsEnabled: false,
+     serviceAccountsEnabled: true,
+     authorizationServicesEnabled: false,
+     # ⚠️ true 여야 한다. false 로 두면 service account 에 realm-management 역할을 부여해도
+     # **토큰에 실리지 않아** Admin API 가 전부 403 이 된다(실제로 겪었다 — 토큰은 발급되고
+     # resource_access 가 null 이라 원인을 찾기 어렵다). §4.6 이 경고한 함정과 같은 구조다.
+     #
+     # 최소권한은 유지된다: 이 client 는 사용자 로그인을 하지 않으므로(standardFlow=false)
+     # 토큰에 실리는 것은 **service account 에 부여된 역할뿐**이고, 그건 아래 세 개로 한정된다.
+     fullScopeAllowed: true,
+     redirectUris: [],
+     webOrigins: []
+   }')
+
 GATEWAY_UUID=""
+IAM_UUID=""
 if step "client '$DOWNSTREAM_CLIENT_ID' upsert"; then
   upsert_client "$DOWNSTREAM_CLIENT_ID" "$downstream_client_payload" >/dev/null
 fi
 if step "client '$GATEWAY_CLIENT_ID' upsert (redirectUris=$REDIRECT_URIS)"; then
   GATEWAY_UUID=$(upsert_client "$GATEWAY_CLIENT_ID" "$gateway_client_payload")
+fi
+if step "client '$IAM_CLIENT_ID' upsert (service account 전용)"; then
+  IAM_UUID=$(upsert_client "$IAM_CLIENT_ID" "$iam_client_payload")
+fi
+
+# ---------------------------------------------------------------------------
+# 3-1) IAM service account 에 realm-management 역할 부여 (최소권한)
+# ---------------------------------------------------------------------------
+# service account 는 client 마다 자동 생성되는 **사용자**다. 그 사용자에게 realm-management client 의
+# 역할을 붙여야 Admin API 를 호출할 수 있다. 역할을 안 붙이면 토큰은 발급되지만 API 가 403 을 준다
+# — 증상이 "인증은 되는데 권한이 없다" 라 원인을 찾기 어렵다.
+# ⚠️ `step` 을 **먼저** 평가해야 한다. dry-run 에서는 client 를 실제로 만들지 않아 `IAM_UUID` 가 비는데,
+# `[[ -n "$IAM_UUID" ]]` 를 앞에 두면 이 단계가 dry-run 출력에서 통째로 사라진다.
+# 그러면 "dry-run 에서 봤으니 괜찮겠지" 가 성립하지 않는다 — dry-run 의 목적이 무너진다.
+if step "IAM service account 역할 부여 (${IAM_SERVICE_ACCOUNT_ROLES[*]})"; then
+  [[ -n "$IAM_UUID" ]] || die "IAM client UUID 를 얻지 못했습니다 (client upsert 실패)"
+  sa_user_id=$(api GET "/admin/realms/$REALM/clients/$IAM_UUID/service-account-user" | jq -r '.id // empty')
+  [[ -n "$sa_user_id" ]] || die "service account 사용자를 찾지 못했습니다 (serviceAccountsEnabled 확인)"
+
+  rm_uuid=$(api GET "/admin/realms/$REALM/clients?clientId=$REALM_MANAGEMENT_CLIENT_ID" \
+    | jq -r '.[0].id // empty')
+  [[ -n "$rm_uuid" ]] || die "'$REALM_MANAGEMENT_CLIENT_ID' client 를 찾지 못했습니다"
+
+  role_payload="[]"
+  for role_name in "${IAM_SERVICE_ACCOUNT_ROLES[@]}"; do
+    role_json=$(api GET "/admin/realms/$REALM/clients/$rm_uuid/roles/$role_name")
+    role_payload=$(jq -n --argjson acc "$role_payload" --argjson r "$role_json" \
+      '$acc + [{id: $r.id, name: $r.name}]')
+  done
+
+  # 이미 부여된 역할을 다시 POST 해도 Keycloak 은 중복을 만들지 않는다(멱등).
+  api POST "/admin/realms/$REALM/users/$sa_user_id/role-mappings/clients/$rm_uuid" "$role_payload" >/dev/null
+  ok "IAM service account 역할 부여 완료 (${IAM_SERVICE_ACCOUNT_ROLES[*]})"
 fi
 
 # ---------------------------------------------------------------------------
@@ -454,6 +524,7 @@ if [[ "$DRY_RUN" == "true" ]]; then
 fi
 
 CLIENT_SECRET=$(api GET "/admin/realms/$REALM/clients/$GATEWAY_UUID/client-secret" | jq -r '.value')
+IAM_CLIENT_SECRET=$(api GET "/admin/realms/$REALM/clients/$IAM_UUID/client-secret" | jq -r '.value')
 
 echo
 ok "realm '$REALM' 구성 완료"
@@ -465,6 +536,17 @@ cat <<EOF
 export KEYCLOAK_ISSUER_URI="$ISSUER_URI"
 export KEYCLOAK_OAUTH_CLIENT_ID="$GATEWAY_CLIENT_ID"
 export KEYCLOAK_OAUTH_CLIENT_SECRET="$CLIENT_SECRET"
+EOF
+
+echo
+echo "─────────────────────────────────────────────────────────────"
+echo " IAM 서비스 주입 환경변수 ($TARGET_ENV) — Phase 8c"
+echo "─────────────────────────────────────────────────────────────"
+cat <<EOF
+export KEYCLOAK_URL="$KEYCLOAK_URL"
+export KEYCLOAK_REALM="$REALM"
+export KEYCLOAK_IAM_CLIENT_ID="$IAM_CLIENT_ID"
+export KEYCLOAK_IAM_CLIENT_SECRET="$IAM_CLIENT_SECRET"
 EOF
 
 if [[ -n "$GENERATED_PASSWORD" ]]; then
@@ -489,6 +571,17 @@ curl -s -X POST $ISSUER_URI/protocol/openid-connect/token \\
   | jq '{iss, aud, azp}'
 
 # 합격 기준: 마지막 명령의 aud 배열에 "$DOWNSTREAM_CLIENT_ID" 포함
+
+# ── IAM service account 검증 (Phase 8c) ──────────────────────────────
+# 토큰이 발급돼도 역할이 없으면 Admin API 가 403 을 준다. 토큰과 권한을 **따로** 확인한다.
+IAM_TOKEN=\$(curl -s -X POST $ISSUER_URI/protocol/openid-connect/token \\
+  -d grant_type=client_credentials -d client_id=$IAM_CLIENT_ID \\
+  --data-urlencode "client_secret=\$KEYCLOAK_IAM_CLIENT_SECRET" | jq -r .access_token)
+
+# 합격 기준: HTTP 200 (403 이면 realm-management 역할이 안 붙은 것)
+curl -s -o /dev/null -w '%{http_code}\\n' \\
+  -H "Authorization: Bearer \$IAM_TOKEN" \\
+  "$KEYCLOAK_URL/admin/realms/$REALM/users?max=1"
 EOF
 echo
 warn "client secret 은 커밋하지 마세요. (.env / values-alpha.secret.yaml 은 .gitignore 대상)"

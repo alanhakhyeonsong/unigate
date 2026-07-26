@@ -35,6 +35,23 @@ spring:
     enabled: true
     locations: classpath:db/migration
 
+# ── Keycloak Admin 접속 (Phase 8c) ───────────────────────────────────────
+# ⚠️ 게이트웨이의 OIDC client 와 **다른 client** 를 쓴다. 게이트웨이는 로그인용(`unigate-client`),
+# 여기는 관리용(`unigate-iam`, service account)이다. 분리하는 이유는 blast radius 축소다 —
+# 관리 자격증명이 유출돼도 로그인 흐름은 무사하고, 그 반대도 마찬가지다
+# (IAM_PLATFORM_DECISION.md §14).
+#
+# service account 에는 realm-management 의 manage-users/view-users/query-users 만 준다.
+# realm-admin 전체를 주면 client·realm 설정까지 바꿀 수 있어 과잉 권한이다.
+unigate:
+  iam:
+    keycloak:
+      server-url: ${KEYCLOAK_URL:http://localhost:8180}
+      realm: ${KEYCLOAK_REALM:test}
+      client-id: ${KEYCLOAK_IAM_CLIENT_ID:unigate-iam}
+      # 실제 값은 환경변수로만 주입한다. 기본값은 부팅만 되게 하는 자리표시자다.
+      client-secret: ${KEYCLOAK_IAM_CLIENT_SECRET:changeit}
+
 server:
   shutdown: graceful
   # gateway(8080) 와 겹치지 않게. 로컬에서 둘을 동시에 띄운다.

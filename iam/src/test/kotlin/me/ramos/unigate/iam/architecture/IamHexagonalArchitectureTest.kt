@@ -65,22 +65,46 @@ class IamHexagonalArchitectureTest {
       ).check(classes)
   }
 
-  // ⚠️ `application` 레이어 규칙은 **일부러 아직 넣지 않았다.**
-  //
-  // P8b(도메인 모델)까지만 진행한 시점이라 `me.ramos.unigate.iam.application` 패키지에 클래스가 0개다.
-  // 규칙을 넣었더니 ArchUnit 이 이렇게 막았다:
-  //
-  //   Rule '...' failed to check any classes. This means either that no classes have been passed
-  //   to the rule at all, or that no classes passed to the rule matched the `that()` clause.
-  //
-  // 여기서 `allowEmptyShould(true)` 로 통과시키는 선택지가 있지만 **그렇게 하지 않는다.** 그건
-  // 아무것도 검사하지 않는 규칙을 "우리는 안전하다"는 증거로 위장하는 것이다
+  // P8b 시점에는 `application` 패키지가 비어 있어 아래 두 규칙을 넣을 수 없었다. ArchUnit 이
+  // "failed to check any classes" 로 막았고, `allowEmptyShould(true)` 로 우회하지 않고 미뤘다
   // (`docs/learning/15-archunit-dependency-guard.md` §5 함정 2).
-  //
-  // → application 이 실제로 생기는 **P8d(가입 유스케이스)** 에서 다음 두 규칙을 추가한다:
-  //    1. application → adapter/config 참조 금지
-  //    2. application 에서 web/http/data/security/jakarta.persistence/servlet/hibernate 금지
-  //       (게이트웨이와 금지 목록이 다르다 — 여기는 Servlet/JPA 계열을 막는다)
+  // **P8c 에서 `IdentityProviderPort` 가 생겨 이제 검사 대상이 있다.**
+
+  @Test
+  fun `application 은 adapter 를 알아서는 안 된다`() {
+    // 포트는 application 이 소유하고 어댑터가 구현한다. 이 방향이 뒤집히면 의존성 역전이 사라진다.
+    noClasses()
+      .that()
+      .resideInAPackage("$ROOT_PACKAGE.application..")
+      .should()
+      .dependOnClassesThat()
+      .resideInAnyPackage("$ROOT_PACKAGE.adapter..", "$ROOT_PACKAGE.config..")
+      .because("application 은 포트 인터페이스로만 바깥과 소통한다.")
+      .check(classes)
+  }
+
+  @Test
+  fun `application 은 웹·영속성 기술을 직접 쓰지 않는다`() {
+    // 게이트웨이와 금지 목록이 다르다 — 여기는 Servlet/JPA 계열을 막는다.
+    //
+    // 특히 중요한 것: `IdentityProviderPort` 가 `RestClient` 나 Keycloak 응답 타입을 시그니처에
+    // 노출하는 순간 Admin API 봉인이 깨진다. 그 회귀를 이 규칙이 막는다.
+    noClasses()
+      .that()
+      .resideInAPackage("$ROOT_PACKAGE.application..")
+      .should()
+      .dependOnClassesThat()
+      .resideInAnyPackage(
+        "org.springframework.web..",
+        "org.springframework.http..",
+        "org.springframework.data..",
+        "org.springframework.security..",
+        "jakarta.persistence..",
+        "jakarta.servlet..",
+        "org.hibernate..",
+      ).because("application 은 기술을 몰라야 한다. Spring 은 스테레오타입(@Service 등)까지만 허용한다.")
+      .check(classes)
+  }
 
   @Test
   fun `domain 은 application 을 알아서는 안 된다`() {

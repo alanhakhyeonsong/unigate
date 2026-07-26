@@ -33,6 +33,7 @@ Keycloak **인스턴스는 공유**하고 **realm으로 격리**한다. 로컬 �
 |---|---|---|
 | Client (confidential) | `unigate-client` | 게이트웨이. 토큰을 **받는** 주체 |
 | Client (audience 전용) | `unigate-downstream-demo` | 다운스트림 예시 앱. 토큰을 **검증하는** 주체 |
+| Client (service account) | `unigate-iam` | IAM 서비스. Keycloak **Admin API를 호출하는** 주체 (§4.7) |
 | Protocol Mapper | `downstream-audience` | access token `aud`에 다운스트림 clientId 주입 |
 | Realm roles | `unigate-user`, `unigate-admin` | 인가 정책 골격 |
 | Group | `unigate-users` | `unigate-user` 역할 자동 부여 |
@@ -174,6 +175,69 @@ https://<alpha-ingress-host>/login/oauth2/code/keycloak   # alpha
 추가를 누락하면 "로그인은 되는데 권한만 비어 있는" 진단하기 성가신 상태가 된다.
 **Phase 1은 ON, Phase 5(인가 정책 정립) 시점에 OFF로 조인다.**
 
+### 4.7 Client ③: `unigate-iam` (service account) — Phase 8c
+
+IAM 서비스가 Keycloak **Admin API**를 호출하기 위한 client다. 앞의 두 client와 성격이 완전히 다르다.
+
+| | `unigate-client` | `unigate-iam` |
+|---|---|---|
+| 용도 | 사용자 **로그인**(Authorization Code) | **관리 API 호출**(사용자 생성·조회) |
+| 인증 주체 | 사람 | **애플리케이션 자신**(service account) |
+| Standard Flow | ON | **OFF** (로그인에 쓰지 않는다) |
+| Service Accounts | — | **ON** |
+| Full scope allowed | ON | **ON** (아래 경고 참조 — OFF로 두면 403) |
+
+#### 왜 client를 분리하는가
+
+게이트웨이 로그인 client에 `manage-users`를 붙이면 될 것 같지만 그러면 **blast radius가 커진다.**
+로그인 client의 secret이 유출되면 사용자 관리 권한까지 함께 넘어간다. 반대로 관리 secret이 새도
+로그인 흐름은 무사해야 한다. 그래서 분리한다(`IAM_PLATFORM_DECISION.md` §14).
+
+#### 부여 역할 — `realm-admin` 을 주지 않는다
+
+`realm-management` client의 다음 역할만 부여한다.
+
+| 역할 | 필요한 이유 |
+|---|---|
+| `manage-users` | 사용자 생성 |
+| `view-users` | 이메일로 기존 사용자 조회(멱등 생성) |
+| `query-users` | 사용자 목록 검색 |
+
+`realm-admin`을 주면 client·realm 설정까지 바꿀 수 있어 과잉이다.
+
+> ⚠️ **역할 부여를 빠뜨리면 진단이 까다롭다.** 토큰은 정상 발급되는데 Admin API만 **403**을 준다.
+> "인증은 되는데 권한이 없다"는 상태라 secret 문제로 오해하기 쉽다. 그래서 §6의 검증이
+> **토큰 발급과 API 호출을 따로** 확인한다.
+
+#### ⚠️ `Full scope allowed`는 반드시 ON (실제로 겪은 함정)
+
+최소권한을 의도해 OFF로 두면 **역할을 부여해도 토큰에 실리지 않아 Admin API가 전부 403**이 된다.
+실제로 그렇게 만들었다가 토큰을 열어보고서야 원인을 찾았다.
+
+```json
+// fullScopeAllowed: false 일 때의 토큰 — 역할이 통째로 없다
+{ "resource_access": null, "realm_access": null, "scope": "email profile" }
+
+// ON 으로 고친 뒤
+"realm-management": { "roles": ["manage-users", "view-users", "query-groups", "query-users"] }
+```
+
+**ON이어도 최소권한은 유지된다.** 이 client는 `standardFlowEnabled: false`라 사용자가 로그인하지
+않으므로, 토큰에 실리는 것은 위 세 역할(+Keycloak이 composite로 딸려주는 `query-groups`)뿐이다.
+
+이는 §4.6이 게이트웨이 client에 대해 경고한 것과 **같은 함정**이다 — full scope를 끄면 scope 탭에
+역할을 명시적으로 추가해야 한다. 맥락이 달라도 증상은 같으니 주의한다.
+
+#### 토큰이 두 종류라는 점
+
+IAM은 서로 다른 두 인증을 다룬다. 헷갈리면 설계가 무너진다.
+
+- **호출자 신원** = 게이트웨이가 relay한 사용자 JWT. "누가 요청했는가"를 식별한다.
+  사용자 토큰에는 `manage-users`가 없어 **Admin API 호출에는 쓸 수 없다.**
+- **관리 자격** = 이 client의 service account 토큰(`client_credentials`). Admin API 호출용.
+
+가입은 사용자 토큰이 아예 없는 상태이므로, IAM은 반드시 자기 자격증명을 따로 가져야 한다.
+
 ---
 
 ## 5. 자동 구성 스크립트
@@ -298,7 +362,9 @@ git diff --cached | grep -nE '<사내-도메인-키워드>|[0-9]{1,3}(\.[0-9]{1,
 
 ---
 
-## 11. 게이트웨이 주입 환경변수
+## 11. 주입 환경변수
+
+### 11.1 게이트웨이
 
 ```bash
 # --- local (test realm) ---
@@ -306,6 +372,22 @@ export KEYCLOAK_ISSUER_URI="https://<keycloak-host>/realms/test"
 export KEYCLOAK_OAUTH_CLIENT_ID="unigate-client"
 export KEYCLOAK_OAUTH_CLIENT_SECRET="<Credentials 탭 값>"
 ```
+
+### 11.2 IAM 서비스 (Phase 8c)
+
+게이트웨이와 **다른 client**를 쓴다(§4.7). 변수 이름도 겹치지 않게 분리했다 — 같은 이름을 쓰면
+한쪽 secret을 다른 쪽에 잘못 주입해도 부팅이 되어 버려서 알아채기 어렵다.
+
+```bash
+# --- local (test realm) ---
+export KEYCLOAK_URL="https://<keycloak-host>"      # realm 경로 없이 호스트까지만
+export KEYCLOAK_REALM="test"
+export KEYCLOAK_IAM_CLIENT_ID="unigate-iam"
+export KEYCLOAK_IAM_CLIENT_SECRET="<Credentials 탭 값>"
+```
+
+> `KEYCLOAK_URL`은 issuer-uri가 **아니다.** Admin API 경로(`/admin/realms/{realm}`)와 토큰 경로
+> (`/realms/{realm}/protocol/...`)의 접두사가 달라, 호스트와 realm을 따로 받는다.
 
 ```yaml
 # --- alpha (unigate realm) : values-alpha.secret.yaml (gitignore 대상) ---

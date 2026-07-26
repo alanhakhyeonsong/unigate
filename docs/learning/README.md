@@ -26,6 +26,7 @@
 | [14](14-problem-detail-xhr-auth-boundary.md) | RFC 9457 Problem Detail 과 XHR 인증 경계 | 4 | 학습중 | 미인증에 무조건 302 를 주면 SPA 에선 CORS 에러로 둔갑. `Sec-Fetch-Mode` 로 갈라 401 + loginUrl |
 | [15](15-archunit-dependency-guard.md) | ArchUnit — 아키텍처 규칙을 문서에서 테스트로 | 5 | 학습중 | 규칙을 빌드가 막게 한다. 단 **통과만 하는 가드는 무의미** — 일부러 위반을 넣어 검증해야 한다 |
 | [16](16-virtual-thread-vs-reactive-two-modules.md) | 한 저장소에 Reactive와 Virtual Thread를 함께 두기 | 8 | 학습중 | "VT 금지"는 원칙이 아니라 **SCG 제약의 파생**이었다. 앱을 나누면 각자 자기 모델을 온전히 쓴다 |
+| [17](17-service-account-and-idempotent-admin-api.md) | service account 토큰과 멱등한 Admin API 호출 | 8 | 학습중 | 토큰이 **두 종류**다(사용자 JWT ≠ 관리 자격). outbox 재시도 대비 멱등 필수, VT 라 `ReentrantLock` |
 
 상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
 
@@ -71,7 +72,8 @@
 ### Phase 8 — IAM 서비스
 
 - [x] **Virtual Thread vs Reactive** — 같은 문제의 경쟁 해법. **`iam` 모듈에서 실제로 VT 를 쓴다** → [16](16-virtual-thread-vs-reactive-two-modules.md)
-- [ ] **VT pinning** — `synchronized` 안에서 블로킹하면 캐리어가 묶인다. HikariCP 로 실측 필요 (P8d)
+- [x] **service account · 멱등 Admin API** → [17](17-service-account-and-idempotent-admin-api.md)
+- [ ] **VT pinning** — `synchronized` 안에서 블로킹하면 캐리어가 묶인다. `ReentrantLock` 으로 예방했으나 **실측은 미완** (P8d)
 - [ ] **outbox 패턴** — 두 시스템 쓰기의 분산 일관성. 도메인 상태에 남긴 흔적은 [16](16-virtual-thread-vs-reactive-two-modules.md) 참조, 구현은 P8d
 - [ ] **JPA 엔티티 ↔ 도메인 모델 매핑** — 분리하기로 했는데(ArchUnit 강제) 비용이 얼마인지는 P8d 에서
 
