@@ -15,6 +15,8 @@ import me.ramos.unigate.iam.application.user.port.outbound.IdentityAlreadyExists
 import me.ramos.unigate.iam.application.user.port.outbound.IdentityProviderPort
 import me.ramos.unigate.iam.application.user.port.outbound.IdentityProviderUnavailableException
 import me.ramos.unigate.iam.application.user.port.outbound.UserProfileRepositoryPort
+import me.ramos.unigate.iam.domain.audit.enums.AuditEventType
+import me.ramos.unigate.iam.domain.audit.model.AuditEvent
 import me.ramos.unigate.iam.domain.shared.vo.UserRef
 import me.ramos.unigate.iam.domain.user.enums.OnboardingState
 import me.ramos.unigate.iam.domain.user.model.UserProfile
@@ -38,8 +40,18 @@ class OutboxProcessorTest {
   private val serializer = JacksonPayloadSerializer(ObjectMapper().registerKotlinModule())
   private val clock = Clock.fixed(Instant.parse("2026-07-26T00:00:00Z"), ZoneOffset.UTC)
 
+  private val recordAuditEventOutPort =
+    mockk<me.ramos.unigate.iam.application.audit.port.outbound.RecordAuditEventOutPort>(relaxed = true)
+
   private val processor =
-    OutboxProcessor(outboxPort, identityProviderPort, userProfileRepository, serializer, clock)
+    OutboxProcessor(
+      outboxPort,
+      identityProviderPort,
+      userProfileRepository,
+      serializer,
+      recordAuditEventOutPort,
+      clock,
+    )
 
   private val payload = """{"email":"alice@example.local","firstName":"alice","lastName":"tester"}"""
 
@@ -113,6 +125,59 @@ class OutboxProcessorTest {
 
     // 사용자에게 알릴 수 있도록 프로필도 실패 상태가 된다.
     assertThat(profile.onboardingState).isEqualTo(OnboardingState.IDENTITY_FAILED)
+  }
+
+  // ── Phase 8g: 감사 ────────────────────────────────────────────────────
+
+  @Test
+  fun `신원 생성에 성공하면 IDENTITY_CREATED 를 남긴다`() {
+    val profile = UserProfile.register("alice@example.local", "alice")
+    every { outboxPort.claimNext(any()) } returns pendingRecord()
+    every { identityProviderPort.createUser(any()) } returns UserRef("kc-123")
+    every { userProfileRepository.findByEmail("alice@example.local") } returns profile
+    every { userProfileRepository.save(any()) } answers { firstArg() }
+
+    processor.processOne()
+
+    val audited = slot<AuditEvent>()
+    verify { recordAuditEventOutPort.record(capture(audited)) }
+    assertThat(audited.captured.type).isEqualTo(AuditEventType.IDENTITY_CREATED)
+    // 이 시점에 비로소 Keycloak sub 를 대상으로 쓸 수 있다.
+    assertThat(audited.captured.targetRef).isEqualTo("kc-123")
+    // 행위자는 사람이 아니라 워커다.
+    assertThat(audited.captured.actorRef).isNull()
+  }
+
+  @Test
+  fun `영구 실패하면 IDENTITY_CREATION_FAILED 를 남긴다`() {
+    val profile = UserProfile.register("alice@example.local", "alice")
+    every { outboxPort.claimNext(any()) } returns pendingRecord()
+    every { identityProviderPort.createUser(any()) } throws
+      IdentityAlreadyExistsException("alice@example.local")
+    every { userProfileRepository.findByEmail("alice@example.local") } returns profile
+
+    processor.processOne()
+
+    val audited = slot<AuditEvent>()
+    verify { recordAuditEventOutPort.record(capture(audited)) }
+    assertThat(audited.captured.type).isEqualTo(AuditEventType.IDENTITY_CREATION_FAILED)
+    assertThat(audited.captured.reasonCode).isEqualTo("identity_already_exists")
+    // 신원 생성에 **실패했으므로** sub 가 없다. 이 사건은 email 로만 가리킬 수 있다.
+    assertThat(audited.captured.targetRef).isNull()
+    assertThat(audited.captured.targetEmail).isEqualTo("alice@example.local")
+  }
+
+  @Test
+  fun `재시도 대상 실패는 감사에 남기지 않는다`() {
+    // 아직 확정된 사건이 아니다. 남기면 Keycloak 이 잠깐 흔들릴 때마다 같은 사건이 10건씩 쌓여
+    // 정작 확정 사건이 묻힌다. 그 관측은 로그·메트릭의 몫이다.
+    every { outboxPort.claimNext(any()) } returns pendingRecord()
+    every { identityProviderPort.createUser(any()) } throws
+      IdentityProviderUnavailableException("keycloak down")
+
+    processor.processOne()
+
+    verify(exactly = 0) { recordAuditEventOutPort.record(any()) }
   }
 
   @Test

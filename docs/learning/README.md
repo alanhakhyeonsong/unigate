@@ -30,6 +30,7 @@
 | [18](18-outbox-worker-multi-instance.md) | 다중 인스턴스 outbox 워커 — SKIP LOCKED와 트랜잭션 경계 | 8 | 학습중 | 중복을 막는 건 스케줄러가 아니라 **DB 행 잠금**. 분산 락은 오히려 병목. 워커가 죽으면 롤백으로 자동 인계 |
 | [19](19-gateway-iam-route-and-registration-rate-limit.md) | GW→IAM 프록시 라우트 — 공개/인증 분리와 가입 rate limit | 8 | 학습중 | 접두사 하나를 둘로 쪼개면 순서·CSRF·rate limit·audience 가 동시에 문제가 된다. 전부 기동으로는 안 드러난다 |
 | [20](20-caller-identity-and-idor-free-design.md) | 호출자 신원으로 자원을 정하기 — 검사하지 않아도 되게 만드는 설계 | 8 | 학습중 | 대상을 토큰 `sub` 로만 정하면 IDOR 이 성립할 자리가 없다. 인라인 value class 는 DI 를 깨뜨린다 |
+| [21](21-two-audit-streams-and-transaction-boundary.md) | 감사 스트림 두 개 — 합치지 않고 traceId 로 잇기 | 8 | 학습중 | 합칠지보다 **어느 트랜잭션에 속하는지**가 먼저다. GW 는 fail-open, IAM 은 fail-closed — 정반대인데 둘 다 근거가 있다 |
 
 상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
 
@@ -82,6 +83,8 @@
 - [x] **Resource Server 로서의 IAM** — 같은 요청이 경계를 넘으며 세션 쿠키 → Bearer 로 인증이 교체된다 → [19](19-gateway-iam-route-and-registration-rate-limit.md) §3
 - [x] **fine 인가 (자원 소유권)** — 검사를 잘 하는 것보다 검사가 필요 없게 만드는 편이 안전하다 → [20](20-caller-identity-and-idor-free-design.md)
 - [x] **Kotlin 인라인 value class 와 Spring DI** — 도메인 VO 에는 맞고 **주입 대상에는 못 쓴다** → [20](20-caller-identity-and-idor-free-design.md) §5 함정 1
+- [x] **감사 스트림의 트랜잭션 경계** — fail-open(GW) vs fail-closed(IAM) → [21](21-two-audit-streams-and-transaction-boundary.md)
+- [x] **outbox 를 쓰지 않을 때를 아는 것** — 단일 DB 쓰기에 얹으면 패턴의 cargo cult → [21](21-two-audit-streams-and-transaction-boundary.md) §2
 - [ ] **VT pinning** — `ReentrantLock` 으로 예방했으나 **실측 여전히 미완**. HikariCP 를 태우게 됐으니 `-Djdk.tracePinnedThreads=full` 로 확인 가능한 조건은 갖춰졌다
 - [ ] **Spring 트랜잭션 전파** — `REQUIRES_NEW` 로 건별 커밋을 만들었는데, 전파 옵션별 동작을 정리한 적은 없다
 

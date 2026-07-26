@@ -1,5 +1,6 @@
 package me.ramos.unigate.iam.application.outbox.service
 
+import me.ramos.unigate.iam.application.audit.port.outbound.RecordAuditEventOutPort
 import me.ramos.unigate.iam.application.outbox.model.OutboxEventType
 import me.ramos.unigate.iam.application.outbox.port.outbound.OutboxPort
 import me.ramos.unigate.iam.application.user.dto.CreateKeycloakUserPayload
@@ -8,6 +9,8 @@ import me.ramos.unigate.iam.application.user.port.outbound.IdentityProviderPort
 import me.ramos.unigate.iam.application.user.port.outbound.IdentityProviderUnavailableException
 import me.ramos.unigate.iam.application.user.port.outbound.PayloadSerializerPort
 import me.ramos.unigate.iam.application.user.port.outbound.UserProfileRepositoryPort
+import me.ramos.unigate.iam.domain.audit.enums.AuditEventType
+import me.ramos.unigate.iam.domain.audit.model.AuditEvent
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
@@ -46,6 +49,7 @@ class OutboxProcessor(
   private val identityProviderPort: IdentityProviderPort,
   private val userProfileRepository: UserProfileRepositoryPort,
   private val payloadSerializer: PayloadSerializerPort,
+  private val recordAuditEventOutPort: RecordAuditEventOutPort,
   private val clock: Clock,
 ) {
   private val log = LoggerFactory.getLogger(javaClass)
@@ -72,8 +76,15 @@ class OutboxProcessor(
       log.warn("outbox 영구 실패(중복 이메일) id={}", record.id)
       markProfileIdentityFailed(record.payload)
       outboxPort.update(record.failedPermanently("identity_already_exists"))
+      // ⚠️ 이 감사는 **catch 블록 안**에 있어야 한다. 이 트랜잭션은 롤백되지 않고 커밋된다
+      // (예외를 삼켜 실패를 상태로 기록하는 경로이므로). 그래서 감사도 함께 커밋된다.
+      recordIdentityFailure(record.payload, "identity_already_exists")
     } catch (e: IdentityProviderUnavailableException) {
       // 재시도 대상. 백오프 후 다시 집힌다. 한도를 넘으면 DEAD 로 간다.
+      //
+      // ⚠️ 여기서는 **감사를 남기지 않는다.** 재시도 실패는 아직 진행 중인 상태이지 확정된 사건이
+      // 아니다. 남기면 Keycloak 이 몇 분 흔들릴 때마다 감사 테이블에 같은 사건이 10건씩 쌓여
+      // 정작 확정 사건이 묻힌다. 그 관측은 로그·메트릭의 몫이다.
       log.warn("outbox 재시도 예정 id={} attempts={}", record.id, record.attempts + 1)
       outboxPort.update(record.failedRetryable(now, "identity_provider_unavailable"))
     }
@@ -93,7 +104,23 @@ class OutboxProcessor(
 
     // 신원 부여와 ACTIVE 전이는 도메인이 함께 처리한다(따로 두면 불일치 상태를 만들 수 있다).
     profile.completeIdentity(userRef)
-    userProfileRepository.save(profile)
+    val saved = userProfileRepository.save(profile)
+
+    // 사용자 계정이 실제로 **존재하게 된 순간**이다. IAM 감사에서 가장 중요한 사건 중 하나이며,
+    // 이때 비로소 `targetRef`(= Keycloak sub)를 쓸 수 있다.
+    //
+    // ⚠️ actorRef 는 null 이다 — 이 사건을 일으킨 것은 사람이 아니라 워커다.
+    // traceId 는 찍히지만 **원래 가입 요청과 다른 trace** 다(스케줄러가 자기 span 을 만든다).
+    // 그래서 가입과 이 사건을 이으려면 trace_id 가 아니라 target_email 로 봐야 한다
+    // (`JpaAuditLogAdapter` KDoc 에 실측값과 함께 적어뒀다).
+    recordAuditEventOutPort.record(
+      AuditEvent(
+        type = AuditEventType.IDENTITY_CREATED,
+        targetRef = userRef.value,
+        targetEmail = saved.email,
+        detail = mapOf("onboardingState" to saved.onboardingState.name),
+      ),
+    )
   }
 
   /** 영구 실패 시 프로필도 실패 상태로 옮겨 사용자에게 알릴 수 있게 한다. */
@@ -103,6 +130,26 @@ class OutboxProcessor(
       profile.failIdentity()
       userProfileRepository.save(profile)
     }
+  }
+
+  /**
+   * 영구 실패를 감사에 남긴다.
+   *
+   * `targetRef` 가 없다 — 신원 생성에 **실패했으므로** Keycloak sub 자체가 없다. 그래서 이 사건은
+   * `target_email` 로만 가리킬 수 있고, 그 컬럼이 nullable 한 `target_ref` 와 함께 존재하는 이유다.
+   */
+  private fun recordIdentityFailure(
+    payload: String,
+    reasonCode: String,
+  ) {
+    val command = payloadSerializer.deserialize(payload, CreateKeycloakUserPayload::class.java)
+    recordAuditEventOutPort.record(
+      AuditEvent(
+        type = AuditEventType.IDENTITY_CREATION_FAILED,
+        targetEmail = command.email,
+        reasonCode = reasonCode,
+      ),
+    )
   }
 
   private fun CreateKeycloakUserPayload.toIdentityCommand() =

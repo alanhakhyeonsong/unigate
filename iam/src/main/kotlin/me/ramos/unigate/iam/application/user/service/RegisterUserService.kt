@@ -1,5 +1,6 @@
 package me.ramos.unigate.iam.application.user.service
 
+import me.ramos.unigate.iam.application.audit.port.outbound.RecordAuditEventOutPort
 import me.ramos.unigate.iam.application.outbox.model.OutboxEventType
 import me.ramos.unigate.iam.application.outbox.model.OutboxRecord
 import me.ramos.unigate.iam.application.outbox.port.outbound.OutboxPort
@@ -9,6 +10,8 @@ import me.ramos.unigate.iam.application.user.dto.RegisterUserResult
 import me.ramos.unigate.iam.application.user.port.inbound.RegisterUserInPort
 import me.ramos.unigate.iam.application.user.port.outbound.PayloadSerializerPort
 import me.ramos.unigate.iam.application.user.port.outbound.UserProfileRepositoryPort
+import me.ramos.unigate.iam.domain.audit.enums.AuditEventType
+import me.ramos.unigate.iam.domain.audit.model.AuditEvent
 import me.ramos.unigate.iam.domain.user.model.UserProfile
 import me.ramos.unigate.iam.domain.user.vo.ConsentRecord
 import org.springframework.stereotype.Service
@@ -38,6 +41,7 @@ class RegisterUserService(
   private val userProfileRepository: UserProfileRepositoryPort,
   private val outboxPort: OutboxPort,
   private val payloadSerializer: PayloadSerializerPort,
+  private val recordAuditEventOutPort: RecordAuditEventOutPort,
   private val clock: Clock,
 ) : RegisterUserInPort {
   /**
@@ -77,6 +81,27 @@ class RegisterUserService(
             ),
           ),
         now = now,
+      ),
+    )
+
+    // Phase 8g: 감사도 **같은 트랜잭션**이다. 프로필·outbox 지시와 함께 커밋되거나 함께 롤백된다.
+    // 여기에 outbox 를 또 얹지 않는 이유: 감사는 같은 DB 로의 단일 쓰기라 이미 원자적이다
+    // (`RecordAuditEventOutPort` KDoc).
+    //
+    // actorRef 가 null 인 것이 정상이다 — 가입은 **미인증 요청**이라 행위자 토큰이 없다.
+    // targetRef 도 아직 없다(신원 생성 전). 그래서 이 구간의 사건은 email 로만 가리킬 수 있고,
+    // 그게 `target_email` 컬럼이 존재하는 이유다.
+    recordAuditEventOutPort.record(
+      AuditEvent(
+        type = AuditEventType.USER_REGISTERED,
+        targetEmail = saved.email,
+        detail =
+          mapOf(
+            "onboardingState" to saved.onboardingState.name,
+            "locale" to saved.locale,
+            // 동의 여부만 남긴다. 동의 자체의 상세는 CONSENT_ACCEPTED 사건이 다룬다.
+            "tosVersion" to saved.consent?.tosVersion,
+          ),
       ),
     )
 
