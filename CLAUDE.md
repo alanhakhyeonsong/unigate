@@ -220,19 +220,30 @@ VT에 더 맞는다 — Keycloak Admin client는 블로킹이고, 관리 도메�
 
 ---
 
-## 6. 샘플 애플리케이션 (커밋 제외)
+## 6. 샘플 애플리케이션 (커밋 대상 — 2026-07-27 방침 변경)
 
-게이트웨이 동작을 **눈으로 검증**하기 위한 로컬 전용 앱이다. **unigate의 산출물이 아니다.**
+게이트웨이 동작을 **눈으로 검증**하기 위한 앱이다. unigate의 산출물은 아니지만 **검증 장치**이고,
+학습 문서와 PR 이 이 코드를 인용하므로 저장소에 있어야 한다.
 
 ```
-samples/                      # .gitignore 대상 — 절대 커밋하지 않는다
-├── downstream-demo/          # 샘플 다운스트림 BE (Resource Server)
-└── frontend-demo/            # 샘플 FE (React + TypeScript)
+samples/
+├── README.md                 # ⚠️ 일부러 취약하게 둔 곳 목록 — 먼저 읽을 것
+├── downstream-demo/          # 샘플 다운스트림 BE (Resource Server, :8081)
+└── frontend-demo/            # 샘플 FE (React + TS + TanStack Query, :5173)
 ```
 
-- **커밋 금지.** `.gitignore`의 `samples/` 로 차단된다. `git add -f` 로 우회하지 않는다.
+> **왜 방침을 바꿨나:** 예전에는 `samples/` 전체를 `.gitignore` 했다("산출물이 아니다"). 그런데
+> 실측이 프로젝트의 핵심 산출물이 되면서, 검증 장치가 저장소에 없으면 ① 학습 문서·PR 이 인용하는
+> 코드를 아무도 볼 수 없고 ② 새로 클론한 사람은 실측을 재현할 수단이 없다. 원래 이유 중
+> "빌드에 영향 없다" 는 `settings.gradle.kts` 미포함으로 그대로 유지된다.
+
+- **빌드 산출물과 로컬 비밀만 무시한다** — `node_modules/` · `build/` · `.env` · `.env.alpha`.
 - `settings.gradle.kts` 에 `include` 하지 않는다. 샘플 BE는 **독립 Gradle 빌드**로 두어
   `./gradlew build` 가 샘플에 영향받지 않게 한다.
+- **실제 좌표를 담지 않는다(§8).** 샘플 설정도 환경변수로만 받고 **fallback 기본값을 두지 않는다** —
+  주입을 빠뜨렸을 때 조용히 엉뚱한 곳을 보는 것보다 기동이 실패하는 편이 낫다.
+- ⚠️ **샘플에는 일부러 취약한 엔드포인트가 있다**(`/legacy/orders`·`/echo` 등). 무엇이 왜 취약한지는
+  `samples/README.md` §3 에 표로 있다. **레퍼런스 구현으로 복사하지 않는다.**
 - 샘플 BE는 Keycloak client `unigate-downstream-demo` 를 **audience로 검증**한다
   (realm에 이미 구성됨 — `docs/KEYCLOAK_REALM_SETUP.md` §4.3~4.4).
 

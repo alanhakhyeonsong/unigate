@@ -80,7 +80,20 @@ secrets/
 application-*-secret.yml
 
 ### 샘플 애플리케이션 (로컬 검증 전용 · 커밋 제외) ###
+# ── 샘플 앱 (2026-07-27 부터 **커밋 대상**) ─────────────────────────────────
 # samples/downstream-demo : 샘플 다운스트림 BE (Resource Server)
-# samples/frontend-demo   : 샘플 FE (React + TypeScript)
-# 게이트웨이 동작 검증용이며 unigate 산출물이 아니다. Gradle 도 include 하지 않는다.
-samples/
+# samples/frontend-demo   : 샘플 FE (React + TypeScript + TanStack Query)
+#
+# 예전에는 `samples/` 전체를 무시했다. 검증 장치가 저장소에 없으면 학습 문서·PR 이 인용하는
+# 코드를 아무도 볼 수 없고, 새로 클론한 사람은 실측을 재현할 수단이 없다.
+# **빌드 산출물과 로컬 비밀만** 무시한다.
+samples/**/node_modules/
+samples/**/build/
+samples/**/.gradle/
+samples/**/dist/
+samples/**/*.tsbuildinfo
+samples/**/.env
+samples/**/.env.local
+samples/**/.env.*.local
+# .env.alpha 는 실제 호스트를 담으므로 무시한다. `.env.alpha.example` 은 커밋한다.
+samples/**/.env.alpha
