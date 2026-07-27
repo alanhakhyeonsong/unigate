@@ -17,12 +17,15 @@ spring:
     virtual:
       enabled: true
 
-  # ── JPA (블로킹이 정상이다) ──────────────────────────────────────────────
-  # gateway 의 R2DBC 와 달리 영속성 컨텍스트·지연로딩·더티체킹이 **있다**.
-  datasource:
-    url: ${IAM_DATASOURCE_URL:jdbc:postgresql://127.0.0.1:3000/unigate_iam}
-    username: ${IAM_DATASOURCE_USERNAME:testuser}
-    password: ${IAM_DATASOURCE_PASSWORD:testpass}
+  # ── 환경별 접속 좌표는 여기 두지 않는다 ──────────────────────────────────
+  # DataSource(`spring.datasource`)와 Keycloak 접속(`unigate.iam.keycloak`)은
+  # **프로파일 파일**이 소유한다 — `application-local.yml` / `application-alpha.yml`.
+  # gateway 와 같은 규칙이다.
+  #
+  # 왜 공통에 기본값을 두지 않나: 공통에 로컬 기본값을 적어두면 alpha 에서 환경변수 주입을
+  # 빠뜨렸을 때 **실패하지 않고 localhost 를 보며 뜬다.** 오설정이 기동 실패가 아니라
+  # "왜 데이터가 안 보이지"로 나타나 발견이 한참 늦는다.
+
   # ── RFC 9457 Problem Detail (Phase 8e) ─────────────────────────────────
   # 켜지 않으면 검증 실패(400)·미지원 메서드(405) 등이 Spring 기본 에러 본문으로 나가,
   # 컨트롤러가 직접 만드는 ProblemDetail(409 등)·보안 핸들러(401/403)와 형식이 갈린다.
@@ -31,6 +34,8 @@ spring:
     problemdetails:
       enabled: true
 
+  # ── JPA (블로킹이 정상이다) ──────────────────────────────────────────────
+  # gateway 의 R2DBC 와 달리 영속성 컨텍스트·지연로딩·더티체킹이 **있다**.
   jpa:
     hibernate:
       # 스키마는 Flyway 가 소유한다. Hibernate 가 손대면 마이그레이션과 이중 관리가 된다.
@@ -51,15 +56,12 @@ spring:
 #
 # service account 에는 realm-management 의 manage-users/view-users/query-users 만 준다.
 # realm-admin 전체를 주면 client·realm 설정까지 바꿀 수 있어 과잉 권한이다.
+#
+# 📌 접속 좌표(`unigate.iam.keycloak.server-url` · `realm` · `client-id` · `client-secret`)는
+# **프로파일 파일**에 있다 — `application-local.yml`(realm=test) / `application-alpha.yml`(realm=unigate).
+# 설계 설명은 환경과 무관하므로 여기 남기고, 값만 환경별로 가져간다.
 unigate:
   iam:
-    keycloak:
-      server-url: ${KEYCLOAK_URL:http://localhost:8180}
-      realm: ${KEYCLOAK_REALM:test}
-      client-id: ${KEYCLOAK_IAM_CLIENT_ID:unigate-iam}
-      # 실제 값은 환경변수로만 주입한다. 기본값은 부팅만 되게 하는 자리표시자다.
-      client-secret: ${KEYCLOAK_IAM_CLIENT_SECRET:changeit}
-
     # ── Resource Server (Phase 8f) ──────────────────────────────────────────
     # GW 가 relay 한 **사용자 JWT** 의 `aud` 에 이 값이 있어야 통과한다(IamSecurityConfig).
     #

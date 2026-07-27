@@ -1,0 +1,42 @@
+# local 환경 — docker-compose 로 띄운 로컬 인프라에 붙는다.
+# 값은 전부 환경변수로 덮을 수 있고, 주입이 없으면 로컬 기본값으로 부팅된다.
+# alpha 와 정반대다(거긴 fallback 이 없어 주입이 빠지면 기동이 실패한다).
+spring:
+  # --- DataSource (JPA, 블로킹이 정상) ---
+  # gateway 의 R2DBC 가 붙는 `unigate` 와 **다른 DB**(`unigate_iam`)다.
+  # 두 서비스는 스키마를 공유하지 않는다 — 감사 스트림을 나눈 것과 같은 이유(P8g D1).
+  # 로컬 postgres 는 호스트 3000 포트로 노출된다 (docker-compose.yml).
+  #
+  # Flyway 는 url 을 따로 두지 않는다. gateway 는 런타임이 R2DBC 라 JDBC 접속을 별도로
+  # 줘야 했지만, 여기선 런타임도 JDBC 라 이 datasource 를 그대로 물려받는다.
+  # 굳이 나눠 적으면 두 값이 어긋났을 때 **마이그레이션과 런타임이 다른 DB 를 보는** 사고가 난다.
+  datasource:
+    url: ${IAM_DATASOURCE_URL:jdbc:postgresql://127.0.0.1:3000/unigate_iam}
+    username: ${IAM_DATASOURCE_USERNAME:testuser}
+    password: ${IAM_DATASOURCE_PASSWORD:testpass}
+
+# --- Keycloak (인스턴스 공유 · realm 격리: local=test / alpha=unigate) ---
+# 자격증명은 `source ./keycloak.secret.env` 로 주입한다(gitignore 대상).
+#
+# ⚠️ 그 파일은 `KEYCLOAK_ISSUER_URI`(= .../realms/test) 를 주는데, IAM 이 필요한 건 realm 을
+# 뺀 **서버 루트**다(Admin API 경로 `/admin/realms/{realm}` 와 토큰 경로의 접두사가 다르기 때문 —
+# KeycloakAdminProperties KDoc). 그래서 로컬 실행 절차에 파생 한 줄이 들어간다:
+#   export KEYCLOAK_URL="${KEYCLOAK_ISSUER_URI%/realms/*}"
+#
+# client-secret 기본값은 부팅만 되게 하는 자리표시자다. 실제 값이 아니며 커밋 대상도 아니다.
+unigate:
+  iam:
+    keycloak:
+      server-url: ${KEYCLOAK_URL:http://localhost:8180}
+      realm: ${KEYCLOAK_REALM:test}
+      client-id: ${KEYCLOAK_IAM_CLIENT_ID:unigate-iam}
+      client-secret: ${KEYCLOAK_IAM_CLIENT_SECRET:changeit}
+
+logging:
+  level:
+    me.ramos.unigate: DEBUG
+    # Hibernate 가 실제로 날린 SQL 을 본다.
+    # 공통 설정의 `format_sql: true` 는 **이 레벨이 켜져야** 효과가 있다 — 꺼두면 포맷 설정만 있고
+    # 출력이 없어 "설정했는데 왜 안 보이지" 로 헤매게 된다.
+    # JPA 는 더티체킹·지연로딩으로 **코드에 없는 쿼리**가 나가므로, 로컬에선 켜두는 편이 학습에 낫다.
+    org.hibernate.SQL: DEBUG

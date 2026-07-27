@@ -1,0 +1,29 @@
+# alpha 환경 — 공유 자원(PostgreSQL/Keycloak) 접속.
+# 민감값은 Helm secret(envFrom)으로 주입되며 이 파일엔 평문 secret 을 두지 않는다.
+#
+# local 과의 결정적 차이: **기본값 fallback 이 없다.** 주입이 빠지면 기동이 실패한다.
+# 의도적이다 — fallback 을 두면 secret 주입을 빠뜨렸을 때 로컬 기본값으로 조용히 떠서
+# "왜 alpha 가 localhost 를 보고 있지" 를 한참 뒤에 발견하게 된다. 빨리 죽는 편이 낫다.
+spring:
+  # gateway 가 쓰는 `unigate` 와 **다른 DB**(`unigate_iam`)를 가리켜야 한다.
+  # Flyway 는 이 datasource 를 그대로 물려받는다(local 파일 주석 참조).
+  datasource:
+    url: ${IAM_DATASOURCE_URL}
+    username: ${IAM_DATASOURCE_USERNAME}
+    password: ${IAM_DATASOURCE_PASSWORD}
+
+# alpha realm 은 `unigate` 다(local 은 `test`). realm 이 다르면 issuer 도 JWKS 경로도 달라지므로
+# 값 하나가 틀리면 **모든 인증 요청이 401** 이고 응답만 봐서는 원인이 안 보인다.
+unigate:
+  iam:
+    keycloak:
+      server-url: ${KEYCLOAK_URL}
+      realm: ${KEYCLOAK_REALM}
+      client-id: ${KEYCLOAK_IAM_CLIENT_ID}
+      client-secret: ${KEYCLOAK_IAM_CLIENT_SECRET}
+
+logging:
+  level:
+    me.ramos.unigate: INFO
+    # ⚠️ SQL 로깅은 켜지 않는다. 파라미터에 email 같은 개인정보가 실리고(CLAUDE.md §8),
+    # 요청당 여러 줄이 쌓여 비용도 크다. 로컬(`application-local.yml`) 한정으로만 켠다.
