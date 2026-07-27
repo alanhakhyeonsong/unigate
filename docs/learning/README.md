@@ -35,6 +35,7 @@
 | [23](23-coarse-authz-tenant-gate.md) | 게이트웨이의 첫 인가 — coarse 테넌트 게이트와 "제거 후 재주입" | 9 | 학습중 | 게이트의 절반은 통과·거부가 아니라 **인입 헤더를 지우는 것**. 우회하면 위조 헤더가 그대로 200 이 된다 — 막는 건 **검사하는 엔드포인트뿐**이었다 |
 | [24](24-fail-closed-by-default-tenant-guard.md) | 잊으면 닫히는 기본값 — 다운스트림 테넌트 격리를 구조로 옮기기 | 9 | 학습중 | 검사를 컨트롤러에서 **인가 규칙과 저장소로** 옮긴다. 잊었을 때의 결과가 데이터 유출이 아니라 **403 과 컴파일 에러**가 되게 |
 | [25](25-email-change-outbox-compensation.md) | 되돌릴 것이 있는 outbox — 이메일 변경과 보상 | 9+ | 학습중 | 어려운 건 성공이 아니라 **실패한 뒤의 상태**다. 확정 값과 요청 값을 나눠 **보상을 필드 하나 지우기**로 줄였다 |
+| [26](26-bff-spa-integration.md) | BFF 에 SPA 를 붙이며 배운 것 — 토큰이 없는 프론트엔드 | 9+ | 학습중 | FE 는 토큰을 모른다. 어려운 건 인증이 아니라 **origin·쿠키·"아직 반영 안 됨"** 이었다 |
 
 상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
 
@@ -108,4 +109,7 @@
 
 ### 샘플 앱 구성 시
 
-- [ ] **BFF + SPA 함정** — XHR 리다이렉트, 세션 쿠키 SameSite, CORS credentials (`CLAUDE.md` §6.1)
+- [x] **BFF + SPA 함정** — XHR 리다이렉트 · 세션 쿠키 · CORS credentials → [26](26-bff-spa-integration.md)
+- [x] **cross-origin 배치의 대가** — CORS·`loginUrl` 절대경로화. 로컬 same-origin 에서는 **절대 드러나지 않는다** → [26](26-bff-spa-integration.md) §5
+- [x] **TanStack Query 캐시와 테넌트 격리** — 서버가 격리해도 캐시 키가 무너뜨리면 요청조차 안 나간다 → [26](26-bff-spa-integration.md) §5
+- [ ] **재로그인 강제** — claim 갱신을 서버가 알릴 수단이 없다 → [26](26-bff-spa-integration.md) §6
