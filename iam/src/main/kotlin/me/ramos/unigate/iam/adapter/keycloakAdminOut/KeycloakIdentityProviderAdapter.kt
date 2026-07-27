@@ -98,6 +98,126 @@ class KeycloakIdentityProviderAdapter(
     return users?.firstOrNull()?.id?.let { UserRef(it) }
   }
 
+  /**
+   * 테넌트 group `/tenants/{tenantId}` 를 만든다 (Phase 9c-2).
+   *
+   * ## 흐름은 [createUser] 의 멱등 전략과 같다
+   * 조회 → 없으면 생성 → 409 면 "이미 있다" 로 간주하고 성공 처리. outbox 가 최소 1회 실행이라
+   * 같은 지시가 두 번 올 수 있고, 그때 예외를 던지면 **정상 재시도가 영구 실패로 둔갑**한다.
+   *
+   * ## 부모 group 을 먼저 보장한다
+   * `/tenants/{id}` 는 `tenants` 라는 부모 아래의 자식이다. realm 을 새로 만든 환경에는 그 부모가
+   * 없으므로, 가정하지 않고 **없으면 만든다.** 이 한 줄이 없으면 새 환경의 첫 테넌트 생성이
+   * 404 로 실패하고, 원인이 "부모 group 부재" 라는 것은 응답만 봐서는 드러나지 않는다.
+   */
+  override fun createTenantGroup(tenantId: String) {
+    val parentId = ensureParentGroup()
+
+    val existing = findChildGroup(parentId, tenantId)
+    if (existing != null) {
+      return
+    }
+
+    try {
+      restClient
+        .post()
+        .uri("${properties.adminRealmUrl()}/groups/$parentId/children")
+        .header("Authorization", "Bearer ${tokenProvider.accessToken()}")
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(mapOf("name" to tenantId))
+        .retrieve()
+        .toBodilessEntity()
+    } catch (e: RestClientResponseException) {
+      if (e.statusCode == HttpStatus.CONFLICT) {
+        // 다른 워커(또는 재시도)가 먼저 만들었다. 경합을 실패로 만들지 않는다.
+        return
+      }
+      if (e.statusCode == HttpStatus.UNAUTHORIZED) {
+        tokenProvider.invalidate()
+      }
+      throw toUnavailable("Keycloak 테넌트 group 생성에 실패했습니다 (HTTP ${e.statusCode.value()})", e)
+    } catch (e: RestClientException) {
+      throw toUnavailable("Keycloak 테넌트 group 생성에 실패했습니다", e)
+    }
+  }
+
+  /** 부모 group `tenants` 의 id 를 돌려준다. 없으면 만든다. */
+  private fun ensureParentGroup(): String {
+    findTopLevelGroup(TENANT_GROUP_PARENT)?.let { return it }
+
+    try {
+      restClient
+        .post()
+        .uri("${properties.adminRealmUrl()}/groups")
+        .header("Authorization", "Bearer ${tokenProvider.accessToken()}")
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(mapOf("name" to TENANT_GROUP_PARENT))
+        .retrieve()
+        .toBodilessEntity()
+    } catch (e: RestClientResponseException) {
+      // 409 면 경합에서 진 것이므로 아래 재조회로 이어간다.
+      if (e.statusCode != HttpStatus.CONFLICT) {
+        if (e.statusCode == HttpStatus.UNAUTHORIZED) {
+          tokenProvider.invalidate()
+        }
+        throw toUnavailable("Keycloak 부모 group 생성에 실패했습니다 (HTTP ${e.statusCode.value()})", e)
+      }
+    } catch (e: RestClientException) {
+      throw toUnavailable("Keycloak 부모 group 생성에 실패했습니다", e)
+    }
+
+    // 만들었는데 못 찾는 것은 일관성 지연(또는 경합)일 수 있으므로 **재시도 대상**으로 던진다.
+    return findTopLevelGroup(TENANT_GROUP_PARENT)
+      ?: throw IdentityProviderUnavailableException("부모 group 을 만들었지만 다시 찾지 못했습니다")
+  }
+
+  private fun findTopLevelGroup(name: String): String? {
+    val uri = URI.create("${properties.adminRealmUrl()}/groups?search=${encodeQueryValue(name)}")
+    return try {
+      restClient
+        .get()
+        .uri(uri)
+        .header("Authorization", "Bearer ${tokenProvider.accessToken()}")
+        .retrieve()
+        .body(Array<KeycloakGroup>::class.java)
+        // search 는 **부분 일치**다. 이름이 정확히 같은 것만 골라야 `tenants-archive` 같은
+        // 유사 group 을 잘못 집지 않는다.
+        ?.firstOrNull { it.name == name }
+        ?.id
+    } catch (e: RestClientResponseException) {
+      if (e.statusCode == HttpStatus.UNAUTHORIZED) {
+        tokenProvider.invalidate()
+      }
+      throw toUnavailable("Keycloak group 조회에 실패했습니다 (HTTP ${e.statusCode.value()})", e)
+    } catch (e: RestClientException) {
+      throw toUnavailable("Keycloak group 조회에 실패했습니다", e)
+    }
+  }
+
+  private fun findChildGroup(
+    parentId: String,
+    name: String,
+  ): String? {
+    val uri = URI.create("${properties.adminRealmUrl()}/groups/$parentId/children?search=${encodeQueryValue(name)}")
+    return try {
+      restClient
+        .get()
+        .uri(uri)
+        .header("Authorization", "Bearer ${tokenProvider.accessToken()}")
+        .retrieve()
+        .body(Array<KeycloakGroup>::class.java)
+        ?.firstOrNull { it.name == name }
+        ?.id
+    } catch (e: RestClientResponseException) {
+      if (e.statusCode == HttpStatus.UNAUTHORIZED) {
+        tokenProvider.invalidate()
+      }
+      throw toUnavailable("Keycloak 자식 group 조회에 실패했습니다 (HTTP ${e.statusCode.value()})", e)
+    } catch (e: RestClientException) {
+      throw toUnavailable("Keycloak 자식 group 조회에 실패했습니다", e)
+    }
+  }
+
   /** 생성 요청을 보내고 `Location` 헤더를 돌려준다. */
   private fun createUserRequest(command: CreateIdentityCommand): String {
     val payload =
@@ -170,6 +290,12 @@ class KeycloakIdentityProviderAdapter(
     return IdentityProviderUnavailableException(message, cause)
   }
 
+  /** group 조회 응답의 필요한 필드만. Keycloak 표현이 이 클래스 밖으로 새지 않는다. */
+  internal data class KeycloakGroup(
+    val id: String = "",
+    val name: String = "",
+  )
+
   /** 조회 응답에서 우리가 쓰는 필드만. Keycloak 의 나머지 필드에 의존하지 않는다. */
   internal data class KeycloakUser(
     val id: String,
@@ -184,4 +310,13 @@ class KeycloakIdentityProviderAdapter(
     @param:JsonProperty("emailVerified") val emailVerified: Boolean,
     val enabled: Boolean,
   )
+
+  private companion object {
+    /**
+     * 테넌트 group 들의 부모. `TenantId.GROUP_PREFIX`(`/tenants/`)와 **같은 이름**이어야 한다 —
+     * 토큰 claim 에 실릴 경로가 `/tenants/{id}` 이므로, 여기가 어긋나면 GW 의 테넌트 게이트(P9f)가
+     * 아무 것도 매칭하지 못한다.
+     */
+    const val TENANT_GROUP_PARENT = "tenants"
+  }
 }

@@ -49,4 +49,23 @@ enum class AuditEventType {
    * 되살리는 사건이라, P8g 에서 두 컬럼을 미리 나눠둔 판단이 여기서 현실이 된다.
    */
   OUTBOX_REQUEUED,
+
+  /**
+   * 테넌트가 생성됐다 (Phase 9c-2). **아직 쓸 수 없는 상태**(`PENDING`)다 —
+   * Keycloak group 프로비저닝이 끝나야 한다.
+   *
+   * `USER_REGISTERED` 와 같은 구도다: 요청이 접수된 사건과 외부 반영이 끝난 사건을 **나눠** 남긴다.
+   * 하나로 합치면 "만들어졌는데 왜 못 쓰지" 라는 구간이 기록에서 사라진다.
+   */
+  TENANT_CREATED,
+
+  /**
+   * Keycloak group 이 만들어져 테넌트가 **사용 가능**해졌다 (Phase 9c-2).
+   *
+   * 워커가 일으키는 사건이라 `actorRef` 가 없다 — `IDENTITY_CREATED` 와 같다.
+   */
+  TENANT_ACTIVATED,
+
+  /** 테넌트에 멤버가 추가됐다 (Phase 9c-2 — 생성자 자동 등록 포함). */
+  MEMBERSHIP_GRANTED,
 }

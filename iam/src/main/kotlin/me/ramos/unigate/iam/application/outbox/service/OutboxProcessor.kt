@@ -4,6 +4,8 @@ import me.ramos.unigate.iam.application.audit.port.outbound.RecordAuditEventOutP
 import me.ramos.unigate.iam.application.outbox.model.OutboxEventType
 import me.ramos.unigate.iam.application.outbox.model.OutboxRecord
 import me.ramos.unigate.iam.application.outbox.port.outbound.OutboxPort
+import me.ramos.unigate.iam.application.tenant.dto.CreateTenantGroupPayload
+import me.ramos.unigate.iam.application.tenant.port.outbound.TenantRepositoryPort
 import me.ramos.unigate.iam.application.user.dto.CreateKeycloakUserPayload
 import me.ramos.unigate.iam.application.user.port.outbound.IdentityAlreadyExistsException
 import me.ramos.unigate.iam.application.user.port.outbound.IdentityProviderPort
@@ -12,6 +14,8 @@ import me.ramos.unigate.iam.application.user.port.outbound.PayloadSerializerPort
 import me.ramos.unigate.iam.application.user.port.outbound.UserProfileRepositoryPort
 import me.ramos.unigate.iam.domain.audit.enums.AuditEventType
 import me.ramos.unigate.iam.domain.audit.model.AuditEvent
+import me.ramos.unigate.iam.domain.tenant.enums.TenantStatus
+import me.ramos.unigate.iam.domain.tenant.vo.TenantId
 import me.ramos.unigate.iam.domain.user.enums.OnboardingState
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
@@ -52,6 +56,7 @@ class OutboxProcessor(
   private val userProfileRepository: UserProfileRepositoryPort,
   private val payloadSerializer: PayloadSerializerPort,
   private val recordAuditEventOutPort: RecordAuditEventOutPort,
+  private val tenantRepository: TenantRepositoryPort,
   private val circuit: OutboxCircuit,
   private val clock: Clock,
 ) {
@@ -139,6 +144,7 @@ class OutboxProcessor(
     try {
       when (record.eventType) {
         OutboxEventType.CREATE_KEYCLOAK_USER -> createKeycloakUser(record.payload)
+        OutboxEventType.CREATE_KEYCLOAK_GROUP -> createTenantGroup(record.payload)
       }
       ProcessOutcome.Success
     } catch (e: IdentityAlreadyExistsException) {
@@ -220,6 +226,46 @@ class OutboxProcessor(
         targetRef = userRef.value,
         targetEmail = saved.email,
         detail = mapOf("onboardingState" to saved.onboardingState.name),
+      ),
+    )
+  }
+
+  /**
+   * 테넌트 group 을 Keycloak 에 만들고, 성공하면 테넌트를 **ACTIVE 로 전이**한다 (Phase 9c-2).
+   *
+   * ## 상태 전이가 여기 있는 이유
+   * `Tenant.create` 는 `PENDING` 으로 시작한다 — group 이 없는 테넌트에 멤버를 넣으면
+   * 토큰 claim 에 실릴 근거가 없기 때문이다. 그 프로비저닝이 끝나는 지점이 바로 여기이므로,
+   * ACTIVE 전이도 여기서 일어나야 "쓸 수 있다" 는 상태가 사실과 일치한다.
+   *
+   * ## payload 에 tenantId 만 담고 DB 를 다시 읽는 이유
+   * displayName·쿼터를 payload 에 넣으면 그 사이 값이 바뀌었을 때 **낡은 사본**으로 판단하게 된다.
+   * 워커는 처리 시점의 최신 상태를 읽는 편이 언제나 정확하다.
+   */
+  private fun createTenantGroup(payload: String) {
+    val command = payloadSerializer.deserialize(payload, CreateTenantGroupPayload::class.java)
+    val tenantId = TenantId(command.tenantId)
+
+    // 어댑터의 createTenantGroup 은 **멱등**이다(조회 → 생성 → 409 면 성공 처리).
+    identityProviderPort.createTenantGroup(command.tenantId)
+
+    val tenant =
+      tenantRepository.findById(tenantId)
+        ?: error("outbox 지시에 대응하는 테넌트가 없습니다: ${command.tenantId}")
+
+    // ⚠️ 이미 ACTIVE 면 전이를 건너뛴다. outbox 는 최소 1회 실행이라 같은 지시가 두 번 올 수 있고,
+    // 그때 ACTIVE→ACTIVE 를 시도하면 상태기계가 거부해 **성공한 작업이 실패로 기록**된다
+    // (markProfileIdentityFailed 에서 겪은 것과 같은 종류의 함정이다).
+    if (tenant.status != TenantStatus.ACTIVE) {
+      tenant.activate()
+      tenantRepository.save(tenant)
+    }
+
+    recordAuditEventOutPort.record(
+      AuditEvent(
+        type = AuditEventType.TENANT_ACTIVATED,
+        tenantRef = command.tenantId,
+        detail = mapOf("displayName" to tenant.displayName),
       ),
     )
   }

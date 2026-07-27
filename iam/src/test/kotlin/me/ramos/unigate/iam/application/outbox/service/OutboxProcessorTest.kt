@@ -43,6 +43,9 @@ class OutboxProcessorTest {
   private val recordAuditEventOutPort =
     mockk<me.ramos.unigate.iam.application.audit.port.outbound.RecordAuditEventOutPort>(relaxed = true)
 
+  private val tenantRepository =
+    mockk<me.ramos.unigate.iam.application.tenant.port.outbound.TenantRepositoryPort>(relaxed = true)
+
   private val circuit = OutboxCircuit(clock)
 
   private val processor =
@@ -52,6 +55,7 @@ class OutboxProcessorTest {
       userProfileRepository,
       serializer,
       recordAuditEventOutPort,
+      tenantRepository,
       circuit,
       clock,
     )
