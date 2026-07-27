@@ -32,7 +32,7 @@
 | [20](20-caller-identity-and-idor-free-design.md) | 호출자 신원으로 자원을 정하기 — 검사하지 않아도 되게 만드는 설계 | 8 | 학습중 | 대상을 토큰 `sub` 로만 정하면 IDOR 이 성립할 자리가 없다. 인라인 value class 는 DI 를 깨뜨린다 |
 | [21](21-two-audit-streams-and-transaction-boundary.md) | 감사 스트림 두 개 — 합치지 않고 traceId 로 잇기 | 8 | 학습중 | 합칠지보다 **어느 트랜잭션에 속하는지**가 먼저다. GW 는 fail-open, IAM 은 fail-closed — 정반대인데 둘 다 근거가 있다 |
 | [22](22-outbox-dlq-and-circuit-breaker.md) | 죽지 못하는 레코드 — outbox DLQ 와 회로 차단기 | 9 | 학습중 | 롤백은 **실패 기록까지 되돌린다**. 재시도 상한을 줄이는 결정은 차단기와 짝일 때만 안전하고, 401 을 "등록 실패" 로 오진했다 |
-| [23](23-coarse-authz-tenant-gate.md) | 게이트웨이의 첫 인가 — coarse 테넌트 게이트와 "제거 후 재주입" | 9 | 학습중 | 게이트의 절반은 통과·거부가 아니라 **인입 헤더를 지우는 것**. `null` 만 보고 "제거됐다" 고 결론지을 뻔했다 — 대조군이 필요했다 |
+| [23](23-coarse-authz-tenant-gate.md) | 게이트웨이의 첫 인가 — coarse 테넌트 게이트와 "제거 후 재주입" | 9 | 학습중 | 게이트의 절반은 통과·거부가 아니라 **인입 헤더를 지우는 것**. 우회하면 위조 헤더가 그대로 200 이 된다 — 막는 건 **검사하는 엔드포인트뿐**이었다 |
 
 상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
 
@@ -95,7 +95,9 @@
 - [x] **outbox DLQ · 회로 차단기** → [22](22-outbox-dlq-and-circuit-breaker.md)
 - [x] **coarse 인가 (게이트웨이)** — 소속인지까지만 본다. 도메인 조회를 하지 않는 것이 경계다 → [23](23-coarse-authz-tenant-gate.md)
 - [x] **신뢰 경계 헤더의 "제거 후 재주입"** — Phase 1 의 `Authorization` 원칙을 테넌트에 적용 → [23](23-coarse-authz-tenant-gate.md) §3.3
+- [x] **fine 인가를 다운스트림에 두는 것의 실제 비용** — 우회 직격으로 확인했다. 검사하지 않는 엔드포인트는 그대로 뚫린다 → [23](23-coarse-authz-tenant-gate.md) §4.7~4.8
 - [ ] **claim 기반 인가의 반영 지연** — 멤버십을 해제해도 토큰 만료(5분) 전까지 통과한다. 즉시 차단 수단은 아직 없다
+- [ ] **세션 토큰 갱신 경로의 재발** — repository 로 토큰을 직접 꺼내면 만료를 갱신하지 못한다. [04](04-oauth2-authorization-code-bff.md) §6 과 [23](23-coarse-authz-tenant-gate.md) §4.6 이 **같은 실패의 두 번째 발생**이다
 
 ### 참고 (직접 쓰지는 않지만 이해가 필요한 것)
 
