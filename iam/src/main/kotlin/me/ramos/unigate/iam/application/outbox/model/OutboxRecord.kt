@@ -102,6 +102,30 @@ data class OutboxRecord(
       lastExceptionClass = exceptionClass,
     )
 
+  /**
+   * `DEAD` 레코드를 다시 처리 대상으로 되돌린다 — 운영자의 수동 재처리 (Phase 9c).
+   *
+   * ## `attempts` 를 0 으로 초기화한다
+   * 재처리는 **"원인을 고쳤으니 다시 해보라"** 는 사람의 판단이다. 이전 시도 횟수를 이어서 세면
+   * 한 번만 더 실패해도 즉시 DEAD 로 돌아가, 고쳐진 문제를 확인할 기회가 없다.
+   *
+   * ## 실패 흔적은 지우지 않는다
+   * [lastError]·[lastExceptionClass] 를 남겨둔다. 재처리가 또 실패했을 때 **직전 실패와 같은
+   * 원인인지** 비교할 수 있어야 하고, 감사 기록만으로는 그 대조가 어렵다.
+   * 다만 [deadAt] 은 지운다 — 지금은 죽어 있지 않으므로 남겨두면 조회에서 거짓 양성이 된다.
+   *
+   * ⚠️ 이 전이는 **멱등하지 않다.** 같은 레코드를 두 번 requeue 하면 두 번 처리된다.
+   * 처리 자체가 멱등하므로(`IdentityProviderPort.createUser` 계약) 결과는 같지만,
+   * 호출자는 이미 PENDING 인 레코드를 되돌리지 않도록 상태를 확인해야 한다.
+   */
+  fun requeued(now: Instant): OutboxRecord =
+    copy(
+      status = OutboxStatus.PENDING,
+      attempts = 0,
+      nextAttemptAt = now,
+      deadAt = null,
+    )
+
   fun completed(): OutboxRecord =
     copy(
       status = OutboxStatus.COMPLETED,

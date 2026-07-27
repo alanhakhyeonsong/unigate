@@ -38,7 +38,7 @@ Keycloak **인스턴스는 공유**하고 **realm으로 격리**한다. 로컬 �
 | Protocol Mapper | `iam-audience` | access token `aud`에 `unigate-iam` 주입 — IAM Resource Server 검증용 (§4.8) |
 | Realm roles | `unigate-user`, `unigate-admin` | 인가 정책 골격 |
 | Group | `unigate-users` | `unigate-user` 역할 자동 부여 |
-| Users (local 전용) | `alice`, `bob` | 인가 성공/실패 케이스 |
+| Users (local 전용) | `alice`, `bob`, `carol` | 인가 성공/실패/관리자 케이스 |
 
 ---
 
@@ -166,6 +166,15 @@ https://<alpha-ingress-host>/login/oauth2/code/keycloak   # alpha
 |---|---|---|
 | `alice` | `unigate-users` | 인증·인가 성공 경로 |
 | `bob` | 없음 | 인증 성공 / 인가 실패(403) 경로 |
+| `carol` | `unigate-users` + realm role **`unigate-admin`** | 관리 API(`/iam/admin` 하위) 검증 경로 (Phase 9c) |
+
+> **`carol` 을 따로 둔 이유** — `alice` 에게 관리자 역할을 얹으면 "일반 사용자" 시나리오의 기준점이
+> 오염된다. 관리 API 는 남의 자원을 다루므로, 권한이 **있는** 호출자와 **없는** 호출자를 동시에
+> 유지해야 인가 경계를 실제로 검증할 수 있다.
+>
+> ⚠️ 역할이 realm 에 **정의만** 되어 있고 사용자에게 할당되지 않으면 토큰의 `realm_access.roles` 에
+> 실리지 않는다. 그러면 관리 API 가 영원히 403 인데, 관리 콘솔에는 역할이 보이므로
+> "역할은 있는데 왜 안 되지" 로 헤매게 된다.
 
 > 비밀번호는 **Temporary OFF**로 설정한다. ON이면 첫 로그인에서 비밀번호 변경 화면이 떠 자동화 테스트가 막힌다.
 

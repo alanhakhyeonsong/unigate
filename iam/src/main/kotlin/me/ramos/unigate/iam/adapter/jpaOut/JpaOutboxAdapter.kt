@@ -5,6 +5,7 @@ import me.ramos.unigate.iam.adapter.jpaOut.repository.OutboxRecordJpaRepository
 import me.ramos.unigate.iam.application.outbox.model.OutboxRecord
 import me.ramos.unigate.iam.application.outbox.model.OutboxStatus
 import me.ramos.unigate.iam.application.outbox.port.outbound.OutboxPort
+import org.springframework.data.domain.Limit
 import org.springframework.stereotype.Component
 import java.time.Instant
 
@@ -41,6 +42,13 @@ class JpaOutboxAdapter(
     entity.updatedAt = Instant.now()
     return repository.save(entity).toModel()
   }
+
+  override fun findById(id: Long): OutboxRecord? = repository.findById(id).orElse(null)?.toModel()
+
+  override fun findDead(limit: Int): List<OutboxRecord> =
+    repository
+      .findByStatusOrderByDeadAtDesc(OutboxStatus.DEAD, Limit.of(limit))
+      .map { it.toModel() }
 
   override fun countByStatus(status: OutboxStatus): Long = repository.countByStatus(status)
 

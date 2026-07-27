@@ -32,6 +32,22 @@ interface OutboxPort {
   fun update(record: OutboxRecord): OutboxRecord
 
   /**
+   * `id` 로 한 건을 읽는다. 없으면 `null`. 운영자 재처리(Phase 9c)에서 쓴다.
+   *
+   * [claimNext] 와 달리 **잠그지 않는다.** 재처리는 상태를 되돌릴 뿐 외부 호출을 하지 않아
+   * 오래 잡고 있을 이유가 없고, 실제 처리는 워커가 정상 클레임 경로로 가져간다.
+   */
+  fun findById(id: Long): OutboxRecord?
+
+  /**
+   * `DEAD` 레코드를 최근에 죽은 순으로 조회한다 — 운영자 조회용(Phase 9c).
+   *
+   * 정렬 기준이 `deadAt` 인 것은 "방금 무슨 일이 났나" 가 가장 흔한 질문이기 때문이다.
+   * `V4` 의 부분 인덱스 `idx_outbox_dead_at` 가 이 조회를 받친다.
+   */
+  fun findDead(limit: Int): List<OutboxRecord>
+
+  /**
    * 상태별 레코드 수. **메트릭 전용**이다(Phase 9b).
    *
    * DEAD 가 쌓이는 것을 아무도 모르는 상태를 없애기 위해 둔다. 업무 로직이 이 값으로 분기하지

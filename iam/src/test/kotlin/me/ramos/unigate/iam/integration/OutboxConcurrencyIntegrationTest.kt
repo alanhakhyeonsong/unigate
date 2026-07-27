@@ -1,14 +1,20 @@
 package me.ramos.unigate.iam.integration
 
 import io.micrometer.core.instrument.MeterRegistry
+import me.ramos.unigate.iam.adapter.jpaOut.repository.AuditLogJpaRepository
 import me.ramos.unigate.iam.adapter.jpaOut.repository.OutboxRecordJpaRepository
 import me.ramos.unigate.iam.adapter.jpaOut.repository.UserProfileJpaRepository
 import me.ramos.unigate.iam.application.outbox.model.OutboxEventType
 import me.ramos.unigate.iam.application.outbox.model.OutboxRecord
 import me.ramos.unigate.iam.application.outbox.model.OutboxStatus
 import me.ramos.unigate.iam.application.outbox.port.outbound.OutboxPort
+import me.ramos.unigate.iam.application.outbox.service.OutboxAdminService
+import me.ramos.unigate.iam.application.outbox.service.OutboxNotDeadException
+import me.ramos.unigate.iam.application.outbox.service.OutboxRecordNotFoundException
 import me.ramos.unigate.iam.application.outbox.service.OutboxRetentionService
+import me.ramos.unigate.iam.domain.audit.enums.AuditEventType
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
@@ -89,8 +95,15 @@ class OutboxConcurrencyIntegrationTest {
   @Autowired
   private lateinit var meterRegistry: MeterRegistry
 
+  @Autowired
+  private lateinit var outboxAdminService: OutboxAdminService
+
+  @Autowired
+  private lateinit var auditLogRepository: AuditLogJpaRepository
+
   @BeforeEach
   fun cleanUp() {
+    auditLogRepository.deleteAll()
     outboxRepository.deleteAll()
     userProfileRepository.deleteAll()
   }
@@ -291,6 +304,68 @@ class OutboxConcurrencyIntegrationTest {
     assertThat(gauge!!.value()).isEqualTo(1.0)
   }
 
+  // ── Phase 9c: 운영자 재처리 ────────────────────────────────────────────
+
+  @Test
+  fun `죽은 지시를 재처리하면 워커가 다시 집어간다`() {
+    // DLQ 의 목적은 "죽은 것을 보관" 이 아니라 **"되살릴 수 있게 하는 것"** 이다.
+    // 상태만 되돌리고 실제 처리는 워커의 정상 클레임 경로에 맡긴다 — 재처리 전용 경로를
+    // 따로 만들면 워커와 두 벌이 되어 한쪽만 고치는 사고가 난다.
+    val record = enqueue("requeue-me@example.local")
+    transactionTemplate.execute {
+      outboxPort.update(record.failedPermanently(Instant.now(), "identity_already_exists", "me.ramos.Boom"))
+    }
+
+    val requeued = outboxAdminService.requeue(record.id!!, ADMIN_SUB)
+
+    assertThat(requeued.status).isEqualTo(OutboxStatus.PENDING)
+    // 재처리는 "원인을 고쳤으니 다시 해보라" 는 판단이다. 시도 횟수를 이어서 세면
+    // 한 번만 더 실패해도 즉시 DEAD 로 돌아가 확인할 기회가 없다.
+    assertThat(requeued.attempts).isZero()
+    assertThat(requeued.deadAt).isNull()
+    // 실패 흔적은 남긴다 — 재처리가 또 실패했을 때 같은 원인인지 대조해야 한다.
+    assertThat(requeued.lastExceptionClass).isEqualTo("me.ramos.Boom")
+
+    // 워커가 실제로 다시 집는다.
+    transactionTemplate.execute {
+      assertThat(outboxPort.claimNext(Instant.now())).isNotNull()
+    }
+  }
+
+  @Test
+  fun `재처리는 감사에 남고 행위자가 대상과 다르다`() {
+    // ⚠️ 지금까지의 감사는 actor == target 이거나 워커 사건이라 행위자가 없었다.
+    // **여기서 처음으로 "누가 남의 것을 건드렸나" 가 의미를 갖는다** — P8g 에서 두 컬럼을
+    // 미리 나눠둔 판단이 현실이 되는 지점이다.
+    val record = enqueue("requeue-audit@example.local")
+    transactionTemplate.execute {
+      outboxPort.update(record.failedPermanently(Instant.now(), "identity_already_exists"))
+    }
+    auditLogRepository.deleteAll()
+
+    outboxAdminService.requeue(record.id!!, ADMIN_SUB)
+
+    val event = auditLogRepository.findAll().single()
+    assertThat(event.eventType).isEqualTo(AuditEventType.OUTBOX_REQUEUED)
+    assertThat(event.actorRef).isEqualTo(ADMIN_SUB)
+    assertThat(event.detail).contains("outboxRecordId")
+  }
+
+  @Test
+  fun `죽지 않은 지시는 재처리할 수 없다`() {
+    // 이미 PENDING 인 것을 되돌리면 진행 중이던 백오프가 사라져 외부 시스템을 즉시 다시 두드린다.
+    val record = enqueue("still-pending@example.local")
+
+    assertThatThrownBy { outboxAdminService.requeue(record.id!!, ADMIN_SUB) }
+      .isInstanceOf(OutboxNotDeadException::class.java)
+  }
+
+  @Test
+  fun `없는 지시를 재처리하면 찾을 수 없다고 알린다`() {
+    assertThatThrownBy { outboxAdminService.requeue(999_999L, ADMIN_SUB) }
+      .isInstanceOf(OutboxRecordNotFoundException::class.java)
+  }
+
   private fun enqueue(email: String): OutboxRecord =
     transactionTemplate.execute {
       outboxPort.enqueue(
@@ -301,4 +376,9 @@ class OutboxConcurrencyIntegrationTest {
         ),
       )
     }!!
+
+  private companion object {
+    /** 재처리를 지시한 관리자의 `sub`. 감사의 `actor_ref` 가 된다. */
+    const val ADMIN_SUB = "99999999-8888-7777-6666-555555555555"
+  }
 }

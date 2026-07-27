@@ -2,6 +2,7 @@ package me.ramos.unigate.iam.adapter.jpaOut.repository
 
 import me.ramos.unigate.iam.adapter.jpaOut.entity.OutboxRecordEntity
 import me.ramos.unigate.iam.application.outbox.model.OutboxStatus
+import org.springframework.data.domain.Limit
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.data.jpa.repository.Modifying
 import org.springframework.data.jpa.repository.Query
@@ -46,6 +47,19 @@ interface OutboxRecordJpaRepository : JpaRepository<OutboxRecordEntity, Long> {
 
   /** 상태별 건수 — 메트릭 전용(Phase 9b). `idx_outbox_status` 를 탄다. */
   fun countByStatus(status: OutboxStatus): Long
+
+  /**
+   * DEAD 목록을 최근 죽은 순으로 (Phase 9c 운영자 조회).
+   *
+   * `Limit` 파라미터를 쓰는 것은 `Pageable` 이 **총 건수 COUNT 쿼리**를 유발할 수 있어서다.
+   * 운영 조회에 총계는 필요 없고, 잔량은 메트릭이 이미 알려준다.
+   *
+   * `V4` 의 부분 인덱스 `idx_outbox_dead_at`(WHERE status='DEAD')이 이 조회를 받친다.
+   */
+  fun findByStatusOrderByDeadAtDesc(
+    status: OutboxStatus,
+    limit: Limit,
+  ): List<OutboxRecordEntity>
 
   /**
    * 오래된 `COMPLETED` 레코드를 **벌크로** 지운다.
