@@ -189,8 +189,12 @@ class IamSecurityConfig(
      *   rate limit 이 담당한다. **경로를 `/iam` 하위 전체로 넓히면 관리 API 까지 공개된다.**
      * - actuator health/info — k8s probe 는 인증 정보를 실을 수 없다.
      *   `prometheus` 는 게이트웨이와 같은 이유로 **의도적으로 제외**한다(정찰 정보).
+     *
+     * > `private` 이 아니라 `internal` 인 이유: [me.ramos.unigate.iam.config.IamAuthorizationCoverageTest]
+     * > 가 **이 목록과 실제 엔드포인트를 대조**한다. 예외 목록은 늘어나기 쉽고 늘어난 것을
+     * > 아무도 못 보는 게 진짜 위험이라, 목록 자체를 테스트가 읽어야 한다.
      */
-    private val PUBLIC_PATHS =
+    internal val PUBLIC_PATHS =
       arrayOf(
         "/iam/register",
         "/actuator/health",
@@ -199,7 +203,7 @@ class IamSecurityConfig(
       )
 
     /** local 프로파일에서만 열리는 검증용 프로브 (`ThreadProbeController`). */
-    private val LOCAL_ONLY_PUBLIC_PATHS = arrayOf("/debug/**")
+    internal val LOCAL_ONLY_PUBLIC_PATHS = arrayOf("/debug/**")
 
     /**
      * 관리 API 경로 (Phase 9c).
@@ -208,7 +212,7 @@ class IamSecurityConfig(
      * (DLQ 재처리 · 테넌트 · 멤버십 …), 하나씩 등록하는 방식이면 **새 컨트롤러를 추가하고 여기를
      * 잊는 순간 인증만 하면 통과**한다. 접두사로 막으면 잊어도 안전한 쪽으로 실패한다.
      */
-    private const val ADMIN_PATHS = "/iam/admin/**"
+    internal const val ADMIN_PATHS = "/iam/admin/**"
 
     /**
      * 관리자 realm 역할.
