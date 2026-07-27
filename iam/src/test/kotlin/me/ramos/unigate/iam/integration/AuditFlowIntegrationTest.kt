@@ -7,10 +7,12 @@ import io.mockk.every
 import me.ramos.unigate.iam.adapter.jpaOut.repository.AuditLogJpaRepository
 import me.ramos.unigate.iam.adapter.jpaOut.repository.OutboxRecordJpaRepository
 import me.ramos.unigate.iam.adapter.jpaOut.repository.UserProfileJpaRepository
+import me.ramos.unigate.iam.application.audit.port.outbound.RecordAuditEventOutPort
 import me.ramos.unigate.iam.application.outbox.service.OutboxProcessor
 import me.ramos.unigate.iam.application.user.port.outbound.IdentityAlreadyExistsException
 import me.ramos.unigate.iam.application.user.port.outbound.IdentityProviderPort
 import me.ramos.unigate.iam.domain.audit.enums.AuditEventType
+import me.ramos.unigate.iam.domain.audit.model.AuditEvent
 import me.ramos.unigate.iam.domain.shared.vo.UserRef
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.BeforeEach
@@ -72,6 +74,9 @@ class AuditFlowIntegrationTest {
 
   @Autowired
   private lateinit var outboxProcessor: OutboxProcessor
+
+  @Autowired
+  private lateinit var recordAuditEventOutPort: RecordAuditEventOutPort
 
   @MockkBean
   private lateinit var identityProviderPort: IdentityProviderPort
@@ -227,6 +232,34 @@ class AuditFlowIntegrationTest {
     register("dup@example.local").andExpect(status().isConflict)
 
     assertThat(auditLogRepository.findAll()).isEmpty()
+  }
+
+  @Test
+  fun `지금 남는 사건에는 tenant 축이 비어 있다`() {
+    // P9a 시점에는 테넌트 개념의 **소비자가 없다.** 전부 null 인 것이 정상이며,
+    // P9d 의 멤버십 유스케이스가 첫 실채움 지점이 된다.
+    registerAndActivate("grace@example.local")
+
+    val events = auditLogRepository.findAll()
+    assertThat(events).isNotEmpty
+    assertThat(events).allMatch { it.tenantRef == null }
+  }
+
+  @Test
+  fun `tenant 축은 값을 주면 그대로 저장된다`() {
+    // ⚠️ 위 테스트만 있으면 **매핑이 통째로 빠져도 통과한다** — 어차피 늘 null 이라 구분이 안 된다.
+    // 컬럼(V3)·엔티티·어댑터 매핑이 실제로 이어져 있는지는 값을 넣어 왕복시켜야만 확인된다.
+    // 아직 이 필드를 채우는 유스케이스가 없으므로 포트를 직접 부른다.
+    recordAuditEventOutPort.record(
+      AuditEvent(
+        type = AuditEventType.PROFILE_UPDATED,
+        actorRef = KEYCLOAK_USER_ID,
+        targetRef = KEYCLOAK_USER_ID,
+        tenantRef = "acme",
+      ),
+    )
+
+    assertThat(auditLogRepository.findAll().single().tenantRef).isEqualTo("acme")
   }
 
   // ── 헬퍼 ──────────────────────────────────────────────────────────────────

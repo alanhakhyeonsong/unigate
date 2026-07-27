@@ -37,6 +37,17 @@ data class AuditEvent(
   val targetRef: String? = null,
   /** 대상 식별에 `userRef` 를 쓸 수 없을 때(신원 생성 전)의 보조 키. */
   val targetEmail: String? = null,
+  /**
+   * 사건이 일어난 **테넌트 맥락**. 테넌트와 무관한 사건(가입·자기 프로필 수정)은 null.
+   *
+   * `actorRef`/`targetRef` 와 **같은 이유로 미리 둔다** — 감사는 소급해 채울 수 없다.
+   * 지금은 채우는 곳이 없고(테넌트 유스케이스가 P9c/P9d), 그래도 지금 두는 것이 맞다.
+   *
+   * `TenantId` VO 가 아니라 `String?` 인 것은 [actorRef]·[targetRef] 와 맞춘 것이다.
+   * 감사는 **일어난 사실의 기록**이라, 나중에 VO 의 검증 규칙이 바뀌어도 과거 기록이
+   * 되읽히지 않아야 한다. 도메인 불변식을 강제할 자리는 여기가 아니다.
+   */
+  val tenantRef: String? = null,
   /** 실패 사건의 분류. 성공 사건에는 null. */
   val reasonCode: String? = null,
   val detail: Map<String, Any?>? = null,
