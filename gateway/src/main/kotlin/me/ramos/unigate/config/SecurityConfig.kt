@@ -33,6 +33,7 @@ import org.springframework.security.web.server.util.matcher.AndServerWebExchange
 import org.springframework.security.web.server.util.matcher.NegatedServerWebExchangeMatcher
 import org.springframework.security.web.server.util.matcher.ServerWebExchangeMatcher
 import org.springframework.security.web.server.util.matcher.ServerWebExchangeMatchers
+import org.springframework.web.cors.reactive.CorsConfigurationSource
 
 /**
  * 게이트웨이 인증 정책 — Authorization Code Flow (BFF).
@@ -60,8 +61,14 @@ class SecurityConfig(
     auditingLogoutHandler: ServerLogoutHandler,
     authenticationEntryPoint: ServerAuthenticationEntryPoint,
     accessDeniedHandler: ServerAccessDeniedHandler,
+    corsConfigurationSource: CorsConfigurationSource,
   ): SecurityWebFilterChain =
     http
+      // ── CORS ────────────────────────────────────────────────────────────
+      // FE 를 다른 호스트에 두는 배포에서만 실제로 동작한다(허용 origin 이 비면 무효과).
+      // ⚠️ 보안 체인에 **연결**해야 한다 — 별도 CorsWebFilter 빈만 두면 인증 필터가 먼저 돌아
+      // preflight(OPTIONS, 자격증명 없음)가 401 로 끊기고, 브라우저 콘솔에는 CORS 에러만 뜬다.
+      .cors { cors -> cors.configurationSource(corsConfigurationSource) }
       // ── Phase 4: 인증·인가 실패를 RFC 9457 Problem Detail 로 ──────────────
       // 미인증 요청은 지금까지 **무조건** 302 로 나갔다. 브라우저 주소창 이동에는 맞지만
       // SPA 의 fetch() 에는 CORS 에러로 둔갑해 진짜 원인(미인증)을 감춘다(CLAUDE.md §6.1).
