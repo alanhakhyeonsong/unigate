@@ -31,6 +31,7 @@
 | [19](19-gateway-iam-route-and-registration-rate-limit.md) | GW→IAM 프록시 라우트 — 공개/인증 분리와 가입 rate limit | 8 | 학습중 | 접두사 하나를 둘로 쪼개면 순서·CSRF·rate limit·audience 가 동시에 문제가 된다. 전부 기동으로는 안 드러난다 |
 | [20](20-caller-identity-and-idor-free-design.md) | 호출자 신원으로 자원을 정하기 — 검사하지 않아도 되게 만드는 설계 | 8 | 학습중 | 대상을 토큰 `sub` 로만 정하면 IDOR 이 성립할 자리가 없다. 인라인 value class 는 DI 를 깨뜨린다 |
 | [21](21-two-audit-streams-and-transaction-boundary.md) | 감사 스트림 두 개 — 합치지 않고 traceId 로 잇기 | 8 | 학습중 | 합칠지보다 **어느 트랜잭션에 속하는지**가 먼저다. GW 는 fail-open, IAM 은 fail-closed — 정반대인데 둘 다 근거가 있다 |
+| [22](22-outbox-dlq-and-circuit-breaker.md) | 죽지 못하는 레코드 — outbox DLQ 와 회로 차단기 | 9 | 학습중 | 롤백은 **실패 기록까지 되돌린다**. 재시도 상한을 줄이는 결정은 차단기와 짝일 때만 안전하고, 401 을 "등록 실패" 로 오진했다 |
 
 상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
 
