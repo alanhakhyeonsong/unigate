@@ -1,5 +1,6 @@
 package me.ramos.unigate.config
 
+import me.ramos.unigate.adapter.gatewayIn.TenantGateFilter
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.cloud.gateway.filter.ratelimit.KeyResolver
@@ -52,6 +53,7 @@ class GatewayRouteConfig {
     @Qualifier("redisRateLimiter") redisRateLimiter: RedisRateLimiter,
     @Qualifier("registrationRateLimiter") registrationRateLimiter: RedisRateLimiter,
     rateLimitKeyResolver: KeyResolver,
+    tenantGateFilter: TenantGateFilter,
   ): RouteLocator =
     builder
       .routes()
@@ -67,6 +69,13 @@ class GatewayRouteConfig {
                 config.rateLimiter = redisRateLimiter
                 config.keyResolver = rateLimitKeyResolver
               }
+              // ── Phase 9f: 테넌트 게이트 (coarse 인가) ──────────────────
+              // 인입 X-Tenant-Id 를 **제거**하고, X-Requested-Tenant 가 있으면 토큰의 소속과
+              // 대조해 통과 시에만 검증된 값을 주입한다. 소속 밖이면 다운스트림 도달 전에 403.
+              //
+              // ⚠️ tokenRelay **앞**에 둔다. 헤더 조작은 토큰 주입 순서와 무관하지만,
+              // 거부되는 요청에 굳이 토큰을 실을 이유가 없다.
+              .filter(tenantGateFilter.filter())
               // 게이트웨이 진입 경로에서 /api 한 단계를 떼고 다운스트림에 전달한다.
               // /api/echo -> /echo
               .stripPrefix(1)
@@ -163,6 +172,11 @@ class GatewayRouteConfig {
                 config.keyResolver = rateLimitKeyResolver
               }.removeRequestHeader(AUTHORIZATION_HEADER)
               .removeRequestHeader(COOKIE_HEADER)
+              // Phase 9f: IAM 라우트에는 테넌트 게이트를 걸지 않는다 — IAM 은 관리 평면이라
+              // 대상 테넌트를 **본문·경로**로 받고 자기 도메인에서 권한을 판단한다.
+              // 다만 위조 헤더는 여기서도 막아야 한다. 게이트를 안 거치는 경로일수록
+              // 인입 헤더가 그대로 흘러갈 위험이 크다.
+              .removeRequestHeader(TenantGateFilter.HEADER_TENANT_ID)
               // 세션의 access token 을 Bearer 로 재주입한다. IAM 은 이것을 Resource Server 로
               // 검증해 **호출자 신원**을 얻는다(D4 보강 ①). Keycloak Admin 호출 권한은 여기 없다 —
               // 그건 IAM 의 service account 토큰이 따로 한다.
