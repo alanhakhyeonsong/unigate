@@ -1,13 +1,16 @@
 package me.ramos.unigate.adapter.gatewayIn
 
 import kotlinx.coroutines.reactor.mono
+import me.ramos.unigate.application.auth.exception.TokenVerificationException
 import me.ramos.unigate.application.auth.port.outbound.TokenVerifierPort
 import org.slf4j.LoggerFactory
 import org.springframework.cloud.gateway.filter.GatewayFilter
 import org.springframework.http.HttpStatus
+import org.springframework.security.authentication.CredentialsExpiredException
 import org.springframework.security.core.Authentication
 import org.springframework.security.core.context.ReactiveSecurityContextHolder
-import org.springframework.security.oauth2.client.web.server.ServerOAuth2AuthorizedClientRepository
+import org.springframework.security.oauth2.client.OAuth2AuthorizeRequest
+import org.springframework.security.oauth2.client.ReactiveOAuth2AuthorizedClientManager
 import org.springframework.stereotype.Component
 import org.springframework.web.server.ResponseStatusException
 import org.springframework.web.server.ServerWebExchange
@@ -40,6 +43,14 @@ import reactor.core.publisher.Mono
  * 여기서 IAM 에 멤버십을 물으면 **모든 요청이 IAM 호출을 동반**하고, 게이트웨이가 도메인을 아는
  * God-gateway 로 미끄러진다. 그 방지선이 "claim 만 본다" 는 규칙이다.
  *
+ * ## 응답 코드 세 가지
+ * ```
+ * 403  소속이 아니다              — 누구인지 안다. 로그인해도 안 바뀐다
+ * 401  세션 토큰을 검증 못 했다    — 재로그인이 해법이다 (302/401 분기는 Phase 4 의 진입점이 처리)
+ * 통과  테넌트를 지정하지 않았다    — 단, 인입 헤더는 제거된 상태다
+ * ```
+ * **500 은 이 목록에 없다.** 만료된 토큰은 서버 오류가 아니다 — [loadAccessToken] 참조.
+ *
  * ## 반영 지연을 인지할 것
  * 토큰의 테넌트 목록은 **발급 시점의 사실**이다. 멤버십이 해제돼도 이미 발급된 토큰은 만료
  * (현재 5분) 전까지 옛 소속을 담고 있어 이 게이트를 통과한다. 즉시 차단이 필요하면 별도 수단이
@@ -48,7 +59,13 @@ import reactor.core.publisher.Mono
 @Component
 class TenantGateFilter(
   private val tokenVerifier: TokenVerifierPort,
-  private val authorizedClientRepository: ServerOAuth2AuthorizedClientRepository,
+  /**
+   * **repository 가 아니라 manager 를 받는다.** repository 는 세션에 저장된 토큰을 *그대로* 꺼내
+   * 주므로 만료된 토큰도 그대로 돌려준다. manager 는 만료를 감지하면 `refreshToken()` provider 로
+   * 새 토큰을 받아 세션에 다시 저장한다 — TokenRelay 가 쓰는 것과 **같은 경로**다
+   * (`TokenRelayConfig`). 실측으로 드러난 결함이다: §"만료 토큰" KDoc 참조.
+   */
+  private val authorizedClientManager: ReactiveOAuth2AuthorizedClientManager,
 ) {
   private val log = LoggerFactory.getLogger(javaClass)
 
@@ -102,21 +119,46 @@ class TenantGateFilter(
       .map { it.authentication }
       .flatMap { authentication -> loadAccessToken(authentication, exchange) }
       .flatMap { token -> mono { tokenVerifier.verify(token).tenants } }
+      // 검증 자체가 실패하면(만료·서명 불일치) 그건 **서버 오류가 아니라 재인증 사유**다.
+      // 그대로 두면 500 이 나간다 — 실측에서 실제로 그랬다.
+      .onErrorMap(TokenVerificationException::class.java) { e ->
+        log.warn("세션 토큰을 검증하지 못했다 — 재인증으로 돌린다 reason={}", e.message)
+        CredentialsExpiredException("세션의 토큰을 검증할 수 없습니다", e)
+      }
       // 토큰을 못 얻으면 소속이 없는 것으로 본다 — **열어주지 않는다.**
       // 인가에서 "판단할 수 없음" 은 거부여야 한다(fail-closed).
       .defaultIfEmpty(emptyList())
 
+  /**
+   * ## 만료 토큰 — repository 로 읽으면 게이트만 500 이 된다
+   *
+   * 세션의 access token 은 5분이면 만료된다. `ServerOAuth2AuthorizedClientRepository` 로 읽으면
+   * **만료된 토큰이 그대로 나오고**, 그걸 검증하면 예외가 나 게이트가 500 을 뱉는다. 같은 요청의
+   * TokenRelay 는 멀쩡히 동작하므로 "게이트를 거는 라우트만 500" 이라는 헷갈리는 형태가 된다.
+   *
+   * [ReactiveOAuth2AuthorizedClientManager.authorize] 는 만료를 감지하면 refresh token 으로
+   * 새 토큰을 받아 세션에 다시 저장한다. TokenRelay 가 쓰는 것과 같은 경로이므로 **두 곳이
+   * 같은 토큰을 본다**는 성질도 함께 얻는다.
+   *
+   * > `docs/learning/04` §6 이 TokenRelay 에 대해 이미 겪은 실패였다. 세션에서 토큰을 직접 꺼내는
+   * > 코드를 새로 쓸 때마다 같은 함정이 되살아난다.
+   */
   private fun loadAccessToken(
     authentication: Authentication?,
     exchange: ServerWebExchange,
   ): Mono<String> {
     if (authentication == null) return Mono.empty()
-    return authorizedClientRepository
-      .loadAuthorizedClient<org.springframework.security.oauth2.client.OAuth2AuthorizedClient>(
-        KEYCLOAK_REGISTRATION_ID,
-        authentication,
-        exchange,
-      ).mapNotNull { it.accessToken?.tokenValue }
+    val authorizeRequest =
+      OAuth2AuthorizeRequest
+        .withClientRegistrationId(KEYCLOAK_REGISTRATION_ID)
+        .principal(authentication)
+        // manager 는 Reactor 컨텍스트에서도 exchange 를 찾지만, 명시로 넣어 두면
+        // 컨텍스트가 비는 경로(테스트·직접 호출)에서도 동작이 같다.
+        .attribute(ServerWebExchange::class.java.name, exchange)
+        .build()
+    return authorizedClientManager
+      .authorize(authorizeRequest)
+      .mapNotNull { it.accessToken?.tokenValue }
   }
 
   /** 인입 `X-Tenant-Id` 를 **제거**한다(덮어쓰기가 아니다 — KDoc 참조). */
