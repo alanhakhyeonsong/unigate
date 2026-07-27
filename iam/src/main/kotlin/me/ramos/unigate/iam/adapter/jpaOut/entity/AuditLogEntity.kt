@@ -42,6 +42,8 @@ class AuditLogEntity(
   val targetRef: String? = null,
   @Column(name = "target_email", length = 255)
   val targetEmail: String? = null,
+  @Column(name = "tenant_ref", length = 64)
+  val tenantRef: String? = null,
   @Column(name = "reason_code", length = 64)
   val reasonCode: String? = null,
   @Column(name = "trace_id", length = 64)

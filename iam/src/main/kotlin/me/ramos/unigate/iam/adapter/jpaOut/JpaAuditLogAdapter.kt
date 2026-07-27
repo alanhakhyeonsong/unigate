@@ -55,6 +55,7 @@ class JpaAuditLogAdapter(
         actorRef = event.actorRef,
         targetRef = event.targetRef,
         targetEmail = event.targetEmail,
+        tenantRef = event.tenantRef,
         reasonCode = event.reasonCode,
         traceId = currentTraceId(),
         detail = event.detail?.let { objectMapper.writeValueAsString(it) },
