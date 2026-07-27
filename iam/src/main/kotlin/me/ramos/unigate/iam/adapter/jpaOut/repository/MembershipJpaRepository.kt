@@ -25,4 +25,13 @@ interface MembershipJpaRepository : JpaRepository<MembershipEntity, Long> {
     userRef: String,
     status: MembershipStatus,
   ): MembershipEntity?
+
+  /**
+   * 한 사용자의 멤버십 전부 — **`REVOKED` 도 포함**한다.
+   *
+   * 목록 API 는 "지금 소속" 뿐 아니라 **"수락 대기 중인 초대"** 도 보여줘야 하고, 해제 이력을
+   * 감출 이유도 없다. 무엇을 걸러낼지는 화면이 정한다 — 저장소가 미리 거르면 그 판단이
+   * 쿼리에 숨는다.
+   */
+  fun findByUserRef(userRef: String): List<MembershipEntity>
 }

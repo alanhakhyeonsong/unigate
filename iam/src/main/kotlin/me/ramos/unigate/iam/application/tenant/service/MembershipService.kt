@@ -9,6 +9,7 @@ import me.ramos.unigate.iam.application.tenant.port.outbound.TenantRepositoryPor
 import me.ramos.unigate.iam.application.user.port.outbound.PayloadSerializerPort
 import me.ramos.unigate.iam.domain.audit.enums.AuditEventType
 import me.ramos.unigate.iam.domain.audit.model.AuditEvent
+import me.ramos.unigate.iam.domain.membership.enums.MembershipStatus
 import me.ramos.unigate.iam.domain.membership.model.Membership
 import me.ramos.unigate.iam.domain.membership.vo.TenantRole
 import me.ramos.unigate.iam.domain.shared.vo.UserRef
@@ -53,11 +54,47 @@ class MembershipService(
   private val log = LoggerFactory.getLogger(javaClass)
 
   /**
+   * 내 멤버십 목록 (수락 대기 중인 초대 포함).
+   *
+   * ## 토큰의 `groups` claim 으로는 부족하다
+   * claim 은 **발급 시점의 ACTIVE 소속**뿐이다. 그래서 세 가지가 안 보인다:
+   * ```
+   * ① 수락 대기 중인 초대(INVITED)     — claim 에 애초에 없다
+   * ② 방금 수락한 테넌트               — 재로그인 전까지 claim 이 옛 상태다
+   * ③ 방금 해제된 테넌트               — 토큰 만료 전까지 claim 에 남아 있다
+   * ```
+   * 그래서 화면이 "초대가 있다"·"수락했으니 재로그인하라" 를 말하려면 **도메인 쪽 목록**이
+   * 필요하다. 게이트의 인가 판단은 여전히 claim 으로만 한다(그건 바뀌지 않는다) —
+   * 이 목록은 **보여주기 위한 것**이지 권한의 근거가 아니다.
+   *
+   * `REVOKED` 는 제외한다. 해제된 소속을 목록에 남기면 "지금 쓸 수 있는 것" 과 이력이 섞인다.
+   */
+  @Transactional(readOnly = true)
+  fun listMine(userRef: String): List<MyMembershipResult> {
+    val memberships = tenantRepository.findMembershipsOf(UserRef(userRef))
+    return memberships
+      .filterNot { it.status == MembershipStatus.REVOKED }
+      .map { membership ->
+        // 테넌트 표시 이름은 목록의 핵심 정보다. 없으면 화면이 id 만 보여주게 된다.
+        val tenant = tenantRepository.findById(membership.tenantId)
+        MyMembershipResult(
+          tenantId = membership.tenantId.value,
+          tenantDisplayName = tenant?.displayName,
+          tenantStatus = tenant?.status?.name,
+          role = membership.role.value,
+          status = membership.status.name,
+          joinedAt = membership.joinedAt,
+        )
+      }
+  }
+
+  /**
    * 사용자를 테넌트에 초대한다. `INVITED` 로 시작하며 **쿼터를 차지하지 않는다.**
    *
    * @throws TenantNotFoundException 테넌트가 없다
    * @throws MembershipAlreadyExistsException 이미 유효한 멤버십이 있다(초대 중이거나 이미 멤버)
    */
+
   @Transactional
   fun invite(command: InviteMemberCommand): MembershipResult {
     val tenantId = TenantId(command.tenantId)
@@ -269,6 +306,21 @@ data class RevokeMembershipCommand(
   val tenantId: String,
   val userRef: String,
   val actorRef: String,
+)
+
+/**
+ * 내 멤버십 한 건 — **화면을 위한 모델**이지 인가의 근거가 아니다.
+ *
+ * 테넌트 표시 이름·상태를 함께 담는다. id 만 주면 화면이 테넌트마다 추가 조회를 하게 되고,
+ * 그 조회는 관리 API(`/iam/admin`)라 일반 사용자가 부를 수 없다.
+ */
+data class MyMembershipResult(
+  val tenantId: String,
+  val tenantDisplayName: String?,
+  val tenantStatus: String?,
+  val role: String,
+  val status: String,
+  val joinedAt: Instant?,
 )
 
 data class MembershipResult(

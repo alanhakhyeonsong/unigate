@@ -67,6 +67,9 @@ class JpaTenantAdapter(
   override fun findMemberships(tenantId: TenantId): List<Membership> =
     membershipRepository.findByTenantId(tenantId.value).map { it.toModel() }
 
+  override fun findMembershipsOf(userRef: UserRef): List<Membership> =
+    membershipRepository.findByUserRef(userRef.value).map { it.toModel() }
+
   override fun findActiveOrInvited(
     tenantId: TenantId,
     userRef: UserRef,

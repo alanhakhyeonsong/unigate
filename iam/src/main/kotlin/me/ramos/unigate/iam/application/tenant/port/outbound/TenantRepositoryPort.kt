@@ -50,4 +50,13 @@ interface TenantRepositoryPort {
 
   /** 초대·수락·역할변경·해제의 결과를 반영한다. 신규 저장은 [saveMembership] 과 같은 통로다. */
   fun updateMembership(membership: Membership): Membership
+
+  /**
+   * 한 사용자의 멤버십 전부. **`REVOKED` 도 포함**한다 — 무엇을 걸러낼지는 유스케이스가 정한다.
+   *
+   * 토큰의 `groups` claim 과 다른 것을 보여준다: claim 은 **발급 시점의 ACTIVE 소속**뿐이라
+   * 수락 대기 중인 초대가 없고, 방금 수락한 것도 재로그인 전까지 안 보인다. 그 차이를 화면이
+   * 설명할 수 있으려면 도메인 쪽 목록이 따로 있어야 한다.
+   */
+  fun findMembershipsOf(userRef: UserRef): List<Membership>
 }

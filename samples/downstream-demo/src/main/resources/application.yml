@@ -1,0 +1,31 @@
+spring:
+  application:
+    name: downstream-demo
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # 서명검증용 JWKS 와 iss 검증 기준. 게이트웨이와 같은 realm 을 바라본다.
+          #
+          # ⚠️ **기본값을 두지 않는다.** 예전에는 실제 호스트가 fallback 으로 박혀 있었는데,
+          # 이 저장소는 public 리모트라 실제 좌표를 커밋 대상에 두지 않는다(CLAUDE.md §8).
+          # 주입이 없으면 기동이 실패한다 — 조용히 엉뚱한 realm 을 바라보는 것보다 낫다
+          # (`iam/application-alpha.yml` 이 fallback 을 없앤 것과 같은 판단).
+          #
+          #   source ./keycloak.secret.env && ./gradlew bootRun
+          issuer-uri: ${KEYCLOAK_ISSUER_URI}
+
+# 이 서비스가 자기 자신이라고 기대하는 audience.
+# Keycloak Audience Mapper 가 access token 의 aud 에 넣어준다(KEYCLOAK_REALM_SETUP.md §4.4).
+unigate:
+  downstream:
+    expected-audience: ${DOWNSTREAM_EXPECTED_AUDIENCE:unigate-downstream-demo}
+
+server:
+  port: 8081
+
+logging:
+  level:
+    me.ramos.downstream: DEBUG
+    # 401 이 왜 났는지(서명·iss·aud·만료 중 무엇인지) 로그로 관찰하기 위한 로컬 전용 설정.
+    org.springframework.security.oauth2: DEBUG

@@ -3,12 +3,14 @@ package me.ramos.unigate.iam.adapter.iamIn
 import me.ramos.unigate.iam.application.tenant.service.MembershipNotFoundException
 import me.ramos.unigate.iam.application.tenant.service.MembershipResult
 import me.ramos.unigate.iam.application.tenant.service.MembershipService
+import me.ramos.unigate.iam.application.tenant.service.MyMembershipResult
 import me.ramos.unigate.iam.application.tenant.service.TenantNotFoundException
 import me.ramos.unigate.iam.domain.tenant.exception.TenantDomainException
 import org.springframework.http.HttpStatus
 import org.springframework.http.ProblemDetail
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken
 import org.springframework.web.bind.annotation.ExceptionHandler
+import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestMapping
@@ -36,6 +38,18 @@ import java.net.URI
 class MyMembershipController(
   private val membershipService: MembershipService,
 ) {
+  /**
+   * 내 멤버십 목록 — 수락 대기 중인 초대를 포함한다.
+   *
+   * ⚠️ **인가의 근거가 아니다.** 게이트는 여전히 토큰 claim 으로만 판단한다. 이 목록은
+   * "초대가 와 있다"·"수락했으니 재로그인해야 반영된다" 를 화면이 말할 수 있게 하는 정보다.
+   * 둘을 혼동해 "목록에 있으니 접근 가능" 으로 취급하면, 재로그인 전 사용자에게 되지 않는
+   * 기능을 열어 보이게 된다.
+   */
+  @GetMapping
+  fun listMine(authentication: JwtAuthenticationToken): List<MyMembershipResult> =
+    membershipService.listMine(authentication.token.subject)
+
   /**
    * 내게 온 초대를 수락한다.
    *
