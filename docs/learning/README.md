@@ -32,6 +32,7 @@
 | [20](20-caller-identity-and-idor-free-design.md) | 호출자 신원으로 자원을 정하기 — 검사하지 않아도 되게 만드는 설계 | 8 | 학습중 | 대상을 토큰 `sub` 로만 정하면 IDOR 이 성립할 자리가 없다. 인라인 value class 는 DI 를 깨뜨린다 |
 | [21](21-two-audit-streams-and-transaction-boundary.md) | 감사 스트림 두 개 — 합치지 않고 traceId 로 잇기 | 8 | 학습중 | 합칠지보다 **어느 트랜잭션에 속하는지**가 먼저다. GW 는 fail-open, IAM 은 fail-closed — 정반대인데 둘 다 근거가 있다 |
 | [22](22-outbox-dlq-and-circuit-breaker.md) | 죽지 못하는 레코드 — outbox DLQ 와 회로 차단기 | 9 | 학습중 | 롤백은 **실패 기록까지 되돌린다**. 재시도 상한을 줄이는 결정은 차단기와 짝일 때만 안전하고, 401 을 "등록 실패" 로 오진했다 |
+| [23](23-coarse-authz-tenant-gate.md) | 게이트웨이의 첫 인가 — coarse 테넌트 게이트와 "제거 후 재주입" | 9 | 학습중 | 게이트의 절반은 통과·거부가 아니라 **인입 헤더를 지우는 것**. `null` 만 보고 "제거됐다" 고 결론지을 뻔했다 — 대조군이 필요했다 |
 
 상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
 
@@ -88,6 +89,13 @@
 - [x] **outbox 를 쓰지 않을 때를 아는 것** — 단일 DB 쓰기에 얹으면 패턴의 cargo cult → [21](21-two-audit-streams-and-transaction-boundary.md) §2
 - [ ] **VT pinning** — `ReentrantLock` 으로 예방했으나 **실측 여전히 미완**. HikariCP 를 태우게 됐으니 `-Djdk.tracePinnedThreads=full` 로 확인 가능한 조건은 갖춰졌다
 - [ ] **Spring 트랜잭션 전파** — `REQUIRES_NEW` 로 건별 커밋을 만들었는데, 전파 옵션별 동작을 정리한 적은 없다
+
+### Phase 9 — 정책 · 멀티테넌시
+
+- [x] **outbox DLQ · 회로 차단기** → [22](22-outbox-dlq-and-circuit-breaker.md)
+- [x] **coarse 인가 (게이트웨이)** — 소속인지까지만 본다. 도메인 조회를 하지 않는 것이 경계다 → [23](23-coarse-authz-tenant-gate.md)
+- [x] **신뢰 경계 헤더의 "제거 후 재주입"** — Phase 1 의 `Authorization` 원칙을 테넌트에 적용 → [23](23-coarse-authz-tenant-gate.md) §3.3
+- [ ] **claim 기반 인가의 반영 지연** — 멤버십을 해제해도 토큰 만료(5분) 전까지 통과한다. 즉시 차단 수단은 아직 없다
 
 ### 참고 (직접 쓰지는 않지만 이해가 필요한 것)
 

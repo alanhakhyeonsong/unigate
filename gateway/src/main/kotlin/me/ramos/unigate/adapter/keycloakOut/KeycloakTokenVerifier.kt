@@ -57,7 +57,8 @@ class KeycloakTokenVerifier(
     return AuthenticatedPrincipal(
       subject = subjectClaim,
       email = getClaimAsString(CLAIM_EMAIL),
-      groups = realmRoles(),
+      roles = realmRoles(),
+      tenants = tenantIds(),
       audiences = audience ?: emptyList(),
     )
   }
@@ -72,8 +73,26 @@ class KeycloakTokenVerifier(
     return (realmAccess[CLAIM_ROLES] as? List<String>) ?: emptyList()
   }
 
+  /**
+   * Keycloak 고유: 테넌트 소속은 `groups` claim 에 **전체 경로**로 담긴다 (Phase 9e 의 매퍼).
+   *
+   * `/tenants/` 접두사로 걸러내는 것이 핵심이다. realm 에는 테넌트가 아닌 group 도 있어
+   * (`/unigate-users` — 역할 매핑용) 전체를 그대로 쓰면 **엉뚱한 group 을 테넌트로 오인**한다.
+   *
+   * 접두사를 벗겨 id 만 넘긴다 — 도메인은 "테넌트가 group 으로 표현된다" 는 사정을 몰라야 한다.
+   */
+  private fun Jwt.tenantIds(): List<String> =
+    getClaimAsStringList(CLAIM_GROUPS)
+      ?.filter { it.startsWith(TENANT_GROUP_PREFIX) }
+      ?.map { it.removePrefix(TENANT_GROUP_PREFIX) }
+      ?: emptyList()
+
   companion object {
     private const val CLAIM_EMAIL = "email"
+    private const val CLAIM_GROUPS = "groups"
+
+    /** Phase 9e 매퍼가 `full.path: true` 로 싣는 경로의 접두사. IAM 의 `TenantId.GROUP_PREFIX` 와 같아야 한다. */
+    private const val TENANT_GROUP_PREFIX = "/tenants/"
     private const val CLAIM_REALM_ACCESS = "realm_access"
     private const val CLAIM_ROLES = "roles"
 

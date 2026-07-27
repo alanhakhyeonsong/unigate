@@ -10,13 +10,15 @@ class AuthenticatedPrincipalTest :
         AuthenticatedPrincipal(
           subject = "user-123",
           email = "user@example.com",
-          groups = listOf("dev", "ops"),
+          roles = listOf("dev", "ops"),
+          tenants = listOf("acme"),
           audiences = listOf("solution-a"),
         )
       `when`("필드를 조회하면") {
         then("설정한 값이 그대로 반환된다") {
           principal.subject shouldBe "user-123"
-          principal.groups shouldBe listOf("dev", "ops")
+          principal.roles shouldBe listOf("dev", "ops")
+          principal.tenants shouldBe listOf("acme")
           principal.audiences shouldBe listOf("solution-a")
         }
       }

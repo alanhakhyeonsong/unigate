@@ -69,7 +69,7 @@ class KeycloakTokenVerifierJwksTest {
       val principal = verifier().verify(signedToken(signingKey))
 
       assertEquals("alice", principal.subject)
-      assertEquals(listOf("unigate-user"), principal.groups)
+      assertEquals(listOf("unigate-user"), principal.roles)
       assertEquals(listOf(AUDIENCE), principal.audiences)
     }
 

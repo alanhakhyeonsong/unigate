@@ -46,7 +46,7 @@ class KeycloakTokenVerifierTest :
           principal.subject shouldBe "alice-sub"
           principal.email shouldBe "alice@example.local"
           // Keycloak 의 realm_access.roles 가 IdP 중립적 groups 로 넘어온다.
-          principal.groups shouldBe listOf("unigate-user", "offline_access")
+          principal.roles shouldBe listOf("unigate-user", "offline_access")
           principal.audiences shouldBe listOf("unigate-downstream-demo", "account")
         }
       }
