@@ -307,7 +307,38 @@ TokenRelay 가 쓰는 그 경로다(`TokenRelayConfig`).
 막은 것은 게이트가 아니라 `/orders` 가 **스스로 한 검사**다. "게이트는 빨리 거절일 뿐 최종
 방어선이 아니다" 가 문장이 아니라 관찰이 됐다.
 
-### 4.8 빌드
+### 4.8 소속이 하나도 없는 사용자로 다시 (alice)
+
+carol 은 `acme` 소속이라 "통과하는 쪽"만 보여준다. 소속이 **0개**인 실사용자로 다시 봤다.
+
+```json
+{"user":"alice","subject":"115f2213-…","groups":["/unigate-users"],"tenants":[]}
+```
+
+```json
+[{"case":"alice · 관리 API (DLQ 조회)","status":403,"body":{"reasonCode":"access_denied"}},
+ {"case":"alice · 관리 API (테넌트 멤버 조회)","status":403,"body":{"reasonCode":"access_denied"}},
+ {"case":"alice · acme 테넌트로 요청","status":403,"body":{"detail":"요청한 테넌트에 소속되어 있지 않습니다"}},
+ {"case":"alice · 테넌트 미지정","status":400,"body":{"reasonCode":"tenant_required"}},
+ {"case":"alice · 위조 X-Tenant-Id 만","status":400,"body":{"reasonCode":"tenant_required"}}]
+```
+
+그리고 **같은 alice 토큰으로 게이트웨이를 우회**했다.
+
+```json
+[{"case":"alice 우회 직격 · X-Tenant-Id: acme 위조","status":403,
+  "body":{"reasonCode":"tenant_header_not_backed_by_token"}},
+ {"case":"alice 우회 직격 · 테넌트 검사 없는 /echo","status":200,
+  "downstreamSaw":{"x-tenant-id":"acme"},"principal":"115f2213-…"}]
+```
+
+관찰: **소속이 하나도 없는 사용자가, 유효한 토큰만으로, 남의 테넌트 헤더를 심어 200 을 받았다.**
+게이트웨이는 이 요청을 본 적이 없고 다운스트림은 검사를 하지 않았다. 이게 "게이트는 최종
+방어선이 아니다" 의 실물이다.
+
+`/orders` 처럼 **자기 검사를 하는** 엔드포인트만 403 으로 살아남았다.
+
+### 4.9 빌드
 
 ```
 BUILD SUCCESSFUL in 13s
@@ -332,9 +363,10 @@ BUILD SUCCESSFUL in 13s
 
 - [ ] **요청마다 서명 검증하는 비용을 실측하지 않았다.** JWKS 캐시 히트라 네트워크는 없지만 RSA 서명
       검증 CPU 는 든다. 부하를 걸었을 때 이벤트 루프 지연에 유의미하게 잡히는지 아직 모른다.
-- [ ] **여러 테넌트에 소속된 사용자**가 `X-Requested-Tenant` 를 생략하면 지금은 그냥 통과한다
-      (헤더 없이). 다운스트림이 "테넌트 미지정"을 어떻게 다뤄야 하는지는 정하지 않았다 —
-      기본 테넌트를 GW 가 골라주는 건 위험해 보이는데, 근거를 정리하지 못했다.
+- [~] **여러 테넌트에 소속된 사용자**가 `X-Requested-Tenant` 를 생략하면 게이트는 그냥 통과시킨다.
+      샘플 다운스트림에서는 **400 `tenant_required`** 로 정했다 — 소속이 하나뿐인 사용자라도
+      "알아서 골라주면" 그 규칙이 다음 사용자에게 잘못 적용된다. 다만 이건 샘플의 선택이고,
+      플랫폼 차원의 규약으로 굳힐지는 아직 모른다.
 - [ ] `X-Requested-Tenant` 는 IAM 라우트로 **통과된다**(§4.5 ⑥). IAM 이 이 값을 쓰지 않는다는 보장은
       지금은 코드 관례뿐이다. 강제할 수단(예: 그 라우트에서도 제거)이 필요한지 판단 못 했다.
 - [x] ~~GW 우회 직격에 위조 `X-Tenant-Id` 를 실으면 무엇이 막는가~~ → §4.7 에서 확인.
