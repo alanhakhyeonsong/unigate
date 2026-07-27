@@ -3,14 +3,27 @@ package me.ramos.unigate.iam.adapter.iamIn
 import jakarta.validation.Valid
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Positive
+import me.ramos.unigate.iam.application.tenant.service.ChangeRoleCommand
 import me.ramos.unigate.iam.application.tenant.service.CreateTenantCommand
 import me.ramos.unigate.iam.application.tenant.service.CreateTenantResult
 import me.ramos.unigate.iam.application.tenant.service.CreateTenantService
+import me.ramos.unigate.iam.application.tenant.service.InviteMemberCommand
+import me.ramos.unigate.iam.application.tenant.service.MembershipAlreadyExistsException
+import me.ramos.unigate.iam.application.tenant.service.MembershipNotFoundException
+import me.ramos.unigate.iam.application.tenant.service.MembershipResult
+import me.ramos.unigate.iam.application.tenant.service.MembershipService
+import me.ramos.unigate.iam.application.tenant.service.RevokeMembershipCommand
 import me.ramos.unigate.iam.application.tenant.service.TenantAlreadyExistsException
+import me.ramos.unigate.iam.application.tenant.service.TenantNotAcceptingMembersException
+import me.ramos.unigate.iam.application.tenant.service.TenantNotFoundException
 import org.springframework.http.HttpStatus
 import org.springframework.http.ProblemDetail
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken
+import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.ExceptionHandler
+import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.PatchMapping
+import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
@@ -38,6 +51,7 @@ import java.net.URI
 @RequestMapping("/iam/admin/tenants")
 class TenantAdminController(
   private val createTenantService: CreateTenantService,
+  private val membershipService: MembershipService,
 ) {
   @PostMapping
   @ResponseStatus(HttpStatus.CREATED)
@@ -55,6 +69,105 @@ class TenantAdminController(
         maxUsers = request.maxUsers,
       ),
     )
+
+  /** 테넌트 멤버 목록. */
+  @GetMapping("/{tenantId}/members")
+  fun listMembers(
+    @PathVariable tenantId: String,
+  ): MemberListResponse = MemberListResponse(members = membershipService.list(tenantId))
+
+  /**
+   * 멤버 초대. `INVITED` 로 시작하며 **쿼터를 차지하지 않는다** — 자리 계산은 수락 시점이다.
+   */
+  @PostMapping("/{tenantId}/members")
+  @ResponseStatus(HttpStatus.CREATED)
+  fun invite(
+    @PathVariable tenantId: String,
+    @Valid @RequestBody request: InviteMemberRequest,
+    authentication: JwtAuthenticationToken,
+  ): MembershipResult =
+    membershipService.invite(
+      InviteMemberCommand(
+        tenantId = tenantId,
+        userRef = request.userRef,
+        role = request.role,
+        // 행위자는 언제나 토큰이 정한다. 본문에서 받으면 감사를 위조할 수 있다.
+        actorRef = authentication.token.subject,
+      ),
+    )
+
+  /** 멤버 역할 변경. */
+  @PatchMapping("/{tenantId}/members/{userRef}")
+  fun changeRole(
+    @PathVariable tenantId: String,
+    @PathVariable userRef: String,
+    @Valid @RequestBody request: ChangeRoleRequest,
+    authentication: JwtAuthenticationToken,
+  ): MembershipResult =
+    membershipService.changeRole(
+      ChangeRoleCommand(
+        tenantId = tenantId,
+        userRef = userRef,
+        role = request.role,
+        actorRef = authentication.token.subject,
+      ),
+    )
+
+  /**
+   * 멤버십 해제(초대 취소 · 멤버 제거).
+   *
+   * 204 가 아니라 **200 + 본문**이다. 해제 후 상태(`REVOKED`)를 돌려주면 클라이언트가 다시
+   * 조회하지 않아도 되고, 무엇보다 **무엇이 해제됐는지**가 응답에 남는다.
+   */
+  @DeleteMapping("/{tenantId}/members/{userRef}")
+  fun revoke(
+    @PathVariable tenantId: String,
+    @PathVariable userRef: String,
+    authentication: JwtAuthenticationToken,
+  ): MembershipResult =
+    membershipService.revoke(
+      RevokeMembershipCommand(
+        tenantId = tenantId,
+        userRef = userRef,
+        actorRef = authentication.token.subject,
+      ),
+    )
+
+  @ExceptionHandler(TenantNotFoundException::class)
+  fun handleTenantNotFound(e: TenantNotFoundException): ProblemDetail =
+    ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, "테넌트를 찾을 수 없습니다").apply {
+      type = URI.create("urn:unigate:iam:tenant-not-found")
+      title = "Tenant Not Found"
+      setProperty("reasonCode", "tenant_not_found")
+      setProperty("tenantId", e.tenantId)
+    }
+
+  @ExceptionHandler(MembershipNotFoundException::class)
+  fun handleMembershipNotFound(e: MembershipNotFoundException): ProblemDetail =
+    ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, "멤버십을 찾을 수 없습니다").apply {
+      type = URI.create("urn:unigate:iam:membership-not-found")
+      title = "Membership Not Found"
+      setProperty("reasonCode", "membership_not_found")
+      setProperty("tenantId", e.tenantId)
+    }
+
+  @ExceptionHandler(MembershipAlreadyExistsException::class)
+  fun handleMembershipDuplicate(e: MembershipAlreadyExistsException): ProblemDetail =
+    ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, "이미 멤버십이 있습니다").apply {
+      type = URI.create("urn:unigate:iam:membership-already-exists")
+      title = "Membership Already Exists"
+      setProperty("reasonCode", "membership_already_exists")
+      setProperty("currentStatus", e.status)
+    }
+
+  @ExceptionHandler(TenantNotAcceptingMembersException::class)
+  fun handleNotAccepting(e: TenantNotAcceptingMembersException): ProblemDetail =
+    ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, "새 멤버를 받을 수 없는 상태입니다").apply {
+      type = URI.create("urn:unigate:iam:tenant-not-accepting-members")
+      title = "Tenant Not Accepting Members"
+      setProperty("reasonCode", "tenant_not_accepting_members")
+      setProperty("currentStatus", e.status)
+    }
 
   @ExceptionHandler(TenantAlreadyExistsException::class)
   fun handleDuplicate(e: TenantAlreadyExistsException): ProblemDetail =
@@ -79,6 +192,24 @@ class TenantAdminController(
       setProperty("reasonCode", "invalid_tenant_request")
     }
 }
+
+data class InviteMemberRequest(
+  /** 초대 대상의 Keycloak `sub`. 이메일이 아닌 이유는 email 이 Keycloak SoT 라 표류하기 때문이다. */
+  @field:NotBlank(message = "userRef 는 필수입니다")
+  val userRef: String,
+  /** 형식 검증은 `TenantRole` VO 가 한다. */
+  @field:NotBlank(message = "role 은 필수입니다")
+  val role: String,
+)
+
+data class ChangeRoleRequest(
+  @field:NotBlank(message = "role 은 필수입니다")
+  val role: String,
+)
+
+data class MemberListResponse(
+  val members: List<MembershipResult>,
+)
 
 data class CreateTenantRequest(
   /**

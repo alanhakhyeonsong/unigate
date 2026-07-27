@@ -60,6 +60,30 @@ interface IdentityProviderPort {
    * @throws IdentityProviderUnavailableException 통신·인증 실패 등 **재시도하면 될 수도 있는** 실패
    */
   fun createTenantGroup(tenantId: String)
+
+  /**
+   * 사용자를 테넌트 group 에 넣는다 (Phase 9d).
+   *
+   * 멱등해야 한다 — 이미 소속이면 **성공으로 처리**한다. Keycloak 의 group 멤버 추가는 원래
+   * 멱등(PUT)이지만, 구현체가 그 성질에 기대는 것을 계약으로 명시해 둔다.
+   *
+   * @throws IdentityProviderUnavailableException 재시도 가능한 실패
+   */
+  fun addUserToTenantGroup(
+    tenantId: String,
+    userRef: String,
+  )
+
+  /**
+   * 사용자를 테넌트 group 에서 뺀다 (Phase 9d).
+   *
+   * ⚠️ **이미 없어도 성공**이어야 한다. 제거는 "그 상태로 만든다" 는 뜻이지 "지금 있어야 한다" 가
+   * 아니다. 없는 것을 실패로 만들면, 재시도가 첫 성공 이후 영원히 실패한다.
+   */
+  fun removeUserFromTenantGroup(
+    tenantId: String,
+    userRef: String,
+  )
 }
 
 /**

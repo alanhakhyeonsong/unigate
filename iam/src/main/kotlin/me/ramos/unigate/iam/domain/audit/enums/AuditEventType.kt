@@ -68,4 +68,25 @@ enum class AuditEventType {
 
   /** 테넌트에 멤버가 추가됐다 (Phase 9c-2 — 생성자 자동 등록 포함). */
   MEMBERSHIP_GRANTED,
+
+  /** 멤버로 초대됐다 (Phase 9d). **아직 멤버가 아니다** — 쿼터도 차지하지 않는다. */
+  MEMBERSHIP_INVITED,
+
+  /**
+   * 초대를 수락해 실제 멤버가 됐다 (Phase 9d).
+   *
+   * 관리 사건 중 **actor 와 target 이 같은** 몇 안 되는 경우다 — 수락은 본인만 할 수 있다.
+   */
+  MEMBERSHIP_ACCEPTED,
+
+  /** 멤버의 역할이 바뀌었다 (Phase 9d). `detail` 에 **변경 전/후**를 담는다. */
+  MEMBERSHIP_ROLE_CHANGED,
+
+  /**
+   * 멤버십이 해제됐다(초대 취소 또는 멤버 제거) (Phase 9d).
+   *
+   * ⚠️ 이 기록의 시각과 **실제 권한이 사라지는 시각은 다르다** — group 제거가 outbox 를 거치고,
+   * 이미 발급된 토큰은 만료 전까지 유효하다. 사후 조사에서 이 간격을 잊으면 안 된다.
+   */
+  MEMBERSHIP_REVOKED,
 }

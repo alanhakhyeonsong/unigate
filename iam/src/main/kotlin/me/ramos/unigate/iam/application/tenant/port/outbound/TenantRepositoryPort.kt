@@ -1,6 +1,7 @@
 package me.ramos.unigate.iam.application.tenant.port.outbound
 
 import me.ramos.unigate.iam.domain.membership.model.Membership
+import me.ramos.unigate.iam.domain.shared.vo.UserRef
 import me.ramos.unigate.iam.domain.tenant.model.Tenant
 import me.ramos.unigate.iam.domain.tenant.vo.TenantId
 
@@ -34,4 +35,19 @@ interface TenantRepositoryPort {
   fun countActiveMembers(tenantId: TenantId): Int
 
   fun findMemberships(tenantId: TenantId): List<Membership>
+
+  /**
+   * 한 사용자의 **현재 유효한** 멤버십을 찾는다 (Phase 9d). 없으면 `null`.
+   *
+   * ⚠️ `REVOKED` 는 제외한다. 탈퇴 이력이 여러 건 쌓일 수 있어 "가장 최근" 을 고르는 규칙이
+   * 필요해지는데, 유효한 것은 부분 unique 인덱스(`uq_membership_active`)가 **최대 하나**임을
+   * 보장하므로 그 모호함이 아예 생기지 않는다.
+   */
+  fun findActiveOrInvited(
+    tenantId: TenantId,
+    userRef: UserRef,
+  ): Membership?
+
+  /** 초대·수락·역할변경·해제의 결과를 반영한다. 신규 저장은 [saveMembership] 과 같은 통로다. */
+  fun updateMembership(membership: Membership): Membership
 }

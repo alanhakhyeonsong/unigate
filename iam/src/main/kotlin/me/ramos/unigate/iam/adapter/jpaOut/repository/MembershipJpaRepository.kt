@@ -15,4 +15,14 @@ interface MembershipJpaRepository : JpaRepository<MembershipEntity, Long> {
     tenantId: String,
     status: MembershipStatus,
   ): Int
+
+  /**
+   * 현재 유효한 멤버십 하나. `REVOKED` 를 제외하므로 부분 unique 인덱스(`uq_membership_active`)가
+   * **최대 하나**임을 보장한다 — 반환 타입이 단수인 근거가 그 제약이다.
+   */
+  fun findByTenantIdAndUserRefAndStatusNot(
+    tenantId: String,
+    userRef: String,
+    status: MembershipStatus,
+  ): MembershipEntity?
 }
