@@ -141,6 +141,80 @@ class KeycloakIdentityProviderAdapter(
     }
   }
 
+  /**
+   * 사용자를 테넌트 group 에 넣는다 (Phase 9d).
+   *
+   * Keycloak 의 group 멤버 추가는 `PUT /users/{id}/groups/{groupId}` 로 **원래 멱등**이다 —
+   * 이미 소속이어도 204 다. outbox 재시도와 잘 맞는다.
+   */
+  override fun addUserToTenantGroup(
+    tenantId: String,
+    userRef: String,
+  ) {
+    val groupId = requireTenantGroupId(tenantId)
+    try {
+      restClient
+        .put()
+        .uri("${properties.adminRealmUrl()}/users/$userRef/groups/$groupId")
+        .header("Authorization", "Bearer ${tokenProvider.accessToken()}")
+        .retrieve()
+        .toBodilessEntity()
+    } catch (e: RestClientResponseException) {
+      if (e.statusCode == HttpStatus.UNAUTHORIZED) {
+        tokenProvider.invalidate()
+      }
+      throw toUnavailable("Keycloak group 멤버 추가에 실패했습니다 (HTTP ${e.statusCode.value()})", e)
+    } catch (e: RestClientException) {
+      throw toUnavailable("Keycloak group 멤버 추가에 실패했습니다", e)
+    }
+  }
+
+  /**
+   * 사용자를 테넌트 group 에서 뺀다 (Phase 9d).
+   *
+   * ⚠️ **404 를 성공으로 처리한다.** 제거는 "그 상태로 만든다" 는 뜻이지 "지금 있어야 한다" 가
+   * 아니다. 없는 것을 실패로 만들면 재시도가 첫 성공 이후 영원히 실패하고, 결국 DEAD 로 간다 —
+   * 실제로는 원하던 상태가 이미 이뤄졌는데도.
+   */
+  override fun removeUserFromTenantGroup(
+    tenantId: String,
+    userRef: String,
+  ) {
+    val groupId = requireTenantGroupId(tenantId)
+    try {
+      restClient
+        .delete()
+        .uri("${properties.adminRealmUrl()}/users/$userRef/groups/$groupId")
+        .header("Authorization", "Bearer ${tokenProvider.accessToken()}")
+        .retrieve()
+        .toBodilessEntity()
+    } catch (e: RestClientResponseException) {
+      if (e.statusCode == HttpStatus.NOT_FOUND) {
+        return
+      }
+      if (e.statusCode == HttpStatus.UNAUTHORIZED) {
+        tokenProvider.invalidate()
+      }
+      throw toUnavailable("Keycloak group 멤버 제거에 실패했습니다 (HTTP ${e.statusCode.value()})", e)
+    } catch (e: RestClientException) {
+      throw toUnavailable("Keycloak group 멤버 제거에 실패했습니다", e)
+    }
+  }
+
+  /**
+   * 테넌트 group 의 id 를 찾는다. 없으면 **재시도 대상**으로 던진다.
+   *
+   * group 은 `CREATE_KEYCLOAK_GROUP` 지시가 만든다. 그 지시가 아직 처리되지 않았다면 여기서
+   * 못 찾는데, 그건 영구 실패가 아니라 **순서 문제**다 — 재시도하면 풀린다.
+   */
+  private fun requireTenantGroupId(tenantId: String): String {
+    val parentId =
+      findTopLevelGroup(TENANT_GROUP_PARENT)
+        ?: throw IdentityProviderUnavailableException("테넌트 부모 group 이 아직 없습니다")
+    return findChildGroup(parentId, tenantId)
+      ?: throw IdentityProviderUnavailableException("테넌트 group 이 아직 없습니다: $tenantId")
+  }
+
   /** 부모 group `tenants` 의 id 를 돌려준다. 없으면 만든다. */
   private fun ensureParentGroup(): String {
     findTopLevelGroup(TENANT_GROUP_PARENT)?.let { return it }

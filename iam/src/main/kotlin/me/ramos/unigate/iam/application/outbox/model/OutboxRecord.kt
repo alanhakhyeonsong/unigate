@@ -201,6 +201,24 @@ enum class OutboxEventType {
    * 약한 기반 위에 사용처를 늘리면 같은 결함이 새 경로에도 그대로 복제된다.
    */
   CREATE_KEYCLOAK_GROUP,
+
+  /**
+   * 사용자를 테넌트 group 에 넣으라 (Phase 9d). payload 는
+   * [me.ramos.unigate.iam.application.tenant.dto.GroupMembershipPayload].
+   *
+   * 초대가 **수락된 시점**에 발행된다. 초대만으로는 발행하지 않는다 —
+   * `INVITED` 는 아직 멤버가 아니고, 토큰 claim 에 실리면 안 되기 때문이다.
+   */
+  ADD_GROUP_MEMBER,
+
+  /**
+   * 사용자를 테넌트 group 에서 빼라 (Phase 9d).
+   *
+   * ⚠️ **지연이 곧 권한 잔존**이다. 다른 지시들은 늦어도 "아직 못 쓴다" 로 끝나지만,
+   * 이것은 늦으면 **떠난 사람이 계속 접근할 수 있다.** 게다가 이미 발급된 토큰은 만료(현재 5분)
+   * 전까지 유효하므로, outbox 지연 + 토큰 수명이 더해진 시간이 실제 잔존 시간이다.
+   */
+  REMOVE_GROUP_MEMBER,
 }
 
 enum class OutboxStatus {

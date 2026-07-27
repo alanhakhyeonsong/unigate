@@ -67,6 +67,36 @@ class JpaTenantAdapter(
   override fun findMemberships(tenantId: TenantId): List<Membership> =
     membershipRepository.findByTenantId(tenantId.value).map { it.toModel() }
 
+  override fun findActiveOrInvited(
+    tenantId: TenantId,
+    userRef: UserRef,
+  ): Membership? =
+    membershipRepository
+      .findByTenantIdAndUserRefAndStatusNot(tenantId.value, userRef.value, MembershipStatus.REVOKED)
+      ?.toModel()
+
+  /**
+   * 기존 행을 찾아 **변경분만 반영**한다.
+   *
+   * `saveMembership` 처럼 새 엔티티를 만들어 저장하면 id 가 없어 **INSERT 가 되고**,
+   * 부분 unique 인덱스에 걸리거나(활성 중복) 이력이 두 벌 생긴다.
+   */
+  override fun updateMembership(membership: Membership): Membership {
+    val entity =
+      membershipRepository
+        .findByTenantIdAndUserRefAndStatusNot(
+          membership.tenantId.value,
+          membership.userRef.value,
+          MembershipStatus.REVOKED,
+        ) ?: return saveMembership(membership)
+
+    entity.role = membership.role.value
+    entity.status = membership.status
+    entity.joinedAt = membership.joinedAt
+    entity.updatedAt = Instant.now()
+    return membershipRepository.save(entity).toModel()
+  }
+
   // ── 매핑 — 엔티티가 이 파일 밖으로 나가지 않는다 ────────────────────────
 
   private fun TenantEntity.toModel(): Tenant =

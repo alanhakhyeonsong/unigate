@@ -3,12 +3,15 @@ package me.ramos.unigate.iam.config
 import com.ninjasquad.springmockk.MockkBean
 import io.mockk.every
 import me.ramos.unigate.iam.adapter.iamIn.CallerProbeController
+import me.ramos.unigate.iam.adapter.iamIn.MyMembershipController
 import me.ramos.unigate.iam.adapter.iamIn.OutboxAdminController
 import me.ramos.unigate.iam.adapter.iamIn.ProblemDetailAccessDeniedHandler
 import me.ramos.unigate.iam.adapter.iamIn.ProblemDetailAuthenticationEntryPoint
 import me.ramos.unigate.iam.adapter.iamIn.RegisterController
 import me.ramos.unigate.iam.adapter.keycloakAdminOut.KeycloakAdminProperties
 import me.ramos.unigate.iam.application.outbox.service.OutboxAdminService
+import me.ramos.unigate.iam.application.tenant.service.MembershipResult
+import me.ramos.unigate.iam.application.tenant.service.MembershipService
 import me.ramos.unigate.iam.application.user.dto.RegisterUserResult
 import me.ramos.unigate.iam.application.user.port.inbound.RegisterUserInPort
 import org.junit.jupiter.api.Test
@@ -46,7 +49,12 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
  * 계층: L3(슬라이스). 외부 의존이 없어 `@Tag("testcontainers")` 를 붙이지 않는다 — CI 게이트에서 돈다.
  */
 @WebMvcTest(
-  controllers = [RegisterController::class, CallerProbeController::class, OutboxAdminController::class],
+  controllers = [
+    RegisterController::class,
+    CallerProbeController::class,
+    OutboxAdminController::class,
+    MyMembershipController::class,
+  ],
 )
 // Phase 8e: `IamSecurityConfig` 가 Problem Detail 핸들러 두 개를 주입받으므로 함께 올린다.
 // 빠뜨리면 컨텍스트 자체가 뜨지 않아 **모든 테스트가 한꺼번에 실패**한다.
@@ -79,6 +87,9 @@ class IamSecurityBoundaryTest {
 
   @MockkBean
   private lateinit var outboxAdminService: OutboxAdminService
+
+  @MockkBean
+  private lateinit var membershipService: MembershipService
 
   @Test
   fun `가입은 인증 없이 열려 있다`() {
@@ -202,6 +213,34 @@ class IamSecurityBoundaryTest {
     mockMvc
       .perform(get("/iam/admin/tenants/some-tenant/members").with(callerToken()))
       .andExpect(status().isForbidden)
+  }
+
+  @Test
+  fun `초대 수락은 관리자가 아니어도 할 수 있다`() {
+    // ⚠️ 이 경로가 /iam/admin 아래에 있으면 **초대 기능이 무의미해진다** —
+    // 일반 사용자가 자기 초대를 수락할 수 없기 때문이다.
+    // 반대로 관리 경로에 두면 관리자가 남의 초대를 대신 수락할 수 있게 된다.
+    //
+    // 대상을 토큰 sub 로만 정하므로(경로에 userRef 가 없다) 인가 검사 없이도 안전하다.
+    every { membershipService.accept(any(), any()) } returns
+      MembershipResult(
+        tenantId = "acme",
+        userRef = CALLER_SUBJECT,
+        role = "member",
+        status = "ACTIVE",
+        joinedAt = null,
+      )
+
+    mockMvc
+      .perform(post("/iam/memberships/acme/accept").with(callerToken()))
+      .andExpect(status().isOk)
+  }
+
+  @Test
+  fun `초대 수락도 인증은 필요하다`() {
+    mockMvc
+      .perform(post("/iam/memberships/acme/accept"))
+      .andExpect(status().isUnauthorized)
   }
 
   @Test

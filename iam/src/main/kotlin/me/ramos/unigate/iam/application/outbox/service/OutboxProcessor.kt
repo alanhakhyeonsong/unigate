@@ -5,6 +5,7 @@ import me.ramos.unigate.iam.application.outbox.model.OutboxEventType
 import me.ramos.unigate.iam.application.outbox.model.OutboxRecord
 import me.ramos.unigate.iam.application.outbox.port.outbound.OutboxPort
 import me.ramos.unigate.iam.application.tenant.dto.CreateTenantGroupPayload
+import me.ramos.unigate.iam.application.tenant.dto.GroupMembershipPayload
 import me.ramos.unigate.iam.application.tenant.port.outbound.TenantRepositoryPort
 import me.ramos.unigate.iam.application.user.dto.CreateKeycloakUserPayload
 import me.ramos.unigate.iam.application.user.port.outbound.IdentityAlreadyExistsException
@@ -145,6 +146,8 @@ class OutboxProcessor(
       when (record.eventType) {
         OutboxEventType.CREATE_KEYCLOAK_USER -> createKeycloakUser(record.payload)
         OutboxEventType.CREATE_KEYCLOAK_GROUP -> createTenantGroup(record.payload)
+        OutboxEventType.ADD_GROUP_MEMBER -> syncGroupMember(record.payload, add = true)
+        OutboxEventType.REMOVE_GROUP_MEMBER -> syncGroupMember(record.payload, add = false)
       }
       ProcessOutcome.Success
     } catch (e: IdentityAlreadyExistsException) {
@@ -268,6 +271,30 @@ class OutboxProcessor(
         detail = mapOf("displayName" to tenant.displayName),
       ),
     )
+  }
+
+  /**
+   * 테넌트 group 의 멤버를 Keycloak 에 반영한다 (Phase 9d).
+   *
+   * ## 추가와 제거를 한 함수로 둔 이유
+   * 둘의 차이가 호출 하나뿐이고, **실패 처리·멱등성 요구가 완전히 같다.** 나누면 같은 주의사항을
+   * 두 곳에 적게 되고, 한쪽만 고치는 사고가 난다.
+   *
+   * ## 여기서 IAM DB 를 바꾸지 않는다
+   * 테넌트 생성(`createTenantGroup`)은 성공 후 `ACTIVE` 로 전이시켰지만, 멤버십은 그렇지 않다.
+   * 멤버십의 상태(`INVITED`/`ACTIVE`/`REVOKED`)는 **사람의 결정**으로 이미 확정됐고, 워커가 하는
+   * 일은 그 결정을 바깥에 **반영**하는 것뿐이다. 여기서 상태를 또 바꾸면 결정 주체가 둘이 된다.
+   */
+  private fun syncGroupMember(
+    payload: String,
+    add: Boolean,
+  ) {
+    val command = payloadSerializer.deserialize(payload, GroupMembershipPayload::class.java)
+    if (add) {
+      identityProviderPort.addUserToTenantGroup(command.tenantId, command.userRef)
+    } else {
+      identityProviderPort.removeUserFromTenantGroup(command.tenantId, command.userRef)
+    }
   }
 
   /**
