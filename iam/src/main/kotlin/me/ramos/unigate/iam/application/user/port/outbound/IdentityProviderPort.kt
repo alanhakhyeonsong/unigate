@@ -40,6 +40,32 @@ interface IdentityProviderPort {
   fun findByEmail(email: String): UserRef?
 
   /**
+   * 기존 신원의 이메일을 바꾼다 (이메일 변경 유스케이스).
+   *
+   * ## 멱등해야 한다
+   * outbox 는 최소 1회 실행이다. 이미 [newEmail] 로 되어 있으면 **성공으로 처리**한다 —
+   * 여기서 예외를 던지면 정상 재시도가 영구 실패로 둔갑하고, 보상이 실행돼 **성공한 변경이
+   * 취소된다.** 실패보다 나쁜 결과다.
+   *
+   * ## username 은 건드리지 않는다
+   * 가입 시 username 을 email 과 같게 만들지만([CreateIdentityCommand] 사용처), 변경 때는
+   * email 만 바꾼다. realm 의 `editUsernameAllowed` 가 꺼져 있으면 username 변경 자체가 거부되고,
+   * 그건 **realm 설정이라 IAM 이 통제할 수 없다.** username 을 못 바꿔 실패하는 것보다,
+   * username 이 가입 시점의 흔적으로 남는 편이 낫다(로그인은 email 로도 된다).
+   *
+   * ## 이메일 인증 상태
+   * 구현체는 `emailVerified` 를 **false 로 되돌린다.** 검증되지 않은 주소가 검증된 것으로
+   * 승격되면, 비밀번호 재설정 메일이 그 주소로 가는 순간 계정 탈취 경로가 된다.
+   *
+   * @throws IdentityAlreadyExistsException 그 이메일을 **다른** 사용자가 쓰고 있다(재시도 무의미)
+   * @throws IdentityProviderUnavailableException 통신·인증 실패 등 재시도 가능한 실패
+   */
+  fun updateEmail(
+    userRef: String,
+    newEmail: String,
+  )
+
+  /**
    * 테넌트 group(`/tenants/{tenantId}`)을 만든다 (Phase 9c-2).
    *
    * ## 왜 group 인가

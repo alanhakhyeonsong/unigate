@@ -34,6 +34,7 @@ internal fun UserProfileRepositoryPort.loadCaller(userRef: String): UserProfile 
 internal fun UserProfile.toMyProfileResult(policy: ConsentPolicy): MyProfileResult =
   MyProfileResult(
     email = email,
+    pendingEmail = pendingEmail,
     displayName = displayName,
     locale = locale,
     onboardingState = onboardingState.name,

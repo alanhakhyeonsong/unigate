@@ -1,16 +1,21 @@
 package me.ramos.unigate.iam.adapter.iamIn
 
 import jakarta.validation.Valid
+import jakarta.validation.constraints.Email
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Size
 import me.ramos.unigate.iam.application.user.dto.AcceptConsentCommand
+import me.ramos.unigate.iam.application.user.dto.ChangeMyEmailCommand
 import me.ramos.unigate.iam.application.user.dto.MyProfileResult
 import me.ramos.unigate.iam.application.user.dto.UpdateMyProfileCommand
 import me.ramos.unigate.iam.application.user.port.inbound.AcceptConsentInPort
+import me.ramos.unigate.iam.application.user.port.inbound.ChangeMyEmailInPort
 import me.ramos.unigate.iam.application.user.port.inbound.GetMyProfileInPort
 import me.ramos.unigate.iam.application.user.port.inbound.UpdateMyProfileInPort
 import me.ramos.unigate.iam.application.user.service.ConsentVersionMismatchException
+import me.ramos.unigate.iam.application.user.service.EmailAlreadyRegisteredException
 import me.ramos.unigate.iam.application.user.service.ProfileNotFoundException
+import me.ramos.unigate.iam.domain.user.exception.UserProfileDomainException
 import org.springframework.http.HttpStatus
 import org.springframework.http.ProblemDetail
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken
@@ -46,6 +51,7 @@ class ProfileController(
   private val getMyProfileInPort: GetMyProfileInPort,
   private val updateMyProfileInPort: UpdateMyProfileInPort,
   private val acceptConsentInPort: AcceptConsentInPort,
+  private val changeMyEmailInPort: ChangeMyEmailInPort,
 ) {
   @GetMapping
   fun getMyProfile(authentication: JwtAuthenticationToken): ProfileResponse =
@@ -91,6 +97,30 @@ class ProfileController(
       ).toResponse()
 
   /**
+   * 이메일 변경 **접수**. 202 인 것이 이 API 의 요점이다.
+   *
+   * 200 을 주면 "바뀌었다" 는 뜻이 되는데, 이 시점에 Keycloak 은 아직 옛 주소를 안다.
+   * 실제 반영은 워커가 하고 실패하면 취소된다(보상). 그래서 **접수됐다** 는 뜻의 202 를 주고,
+   * 본문에 확정 값과 대기 값을 함께 담아 클라이언트가 상태를 정확히 표현하게 한다.
+   *
+   * PATCH(부분 갱신)가 아니라 별도 경로인 이유: 이메일은 다른 프로필 필드와 **처리 경로가 다르다**.
+   * 같은 요청으로 묶으면 "displayName 은 즉시, email 은 나중" 이라는 두 시맨틱이 한 응답에 섞인다.
+   */
+  @PostMapping("/email-change")
+  @ResponseStatus(HttpStatus.ACCEPTED)
+  fun changeMyEmail(
+    authentication: JwtAuthenticationToken,
+    @Valid @RequestBody request: ChangeEmailRequest,
+  ): EmailChangeResponse =
+    changeMyEmailInPort
+      .requestChange(
+        ChangeMyEmailCommand(
+          userRef = authentication.callerRef(),
+          newEmail = request.newEmail,
+        ),
+      ).let { EmailChangeResponse(email = it.email, pendingEmail = it.pendingEmail) }
+
+  /**
    * 프로필 없음 → 404.
    *
    * 401 이 아닌 이유: **인증은 성공했다.** 토큰은 유효하고 호출자가 누구인지도 안다. 없는 것은
@@ -107,6 +137,64 @@ class ProfileController(
       ).apply {
         title = "Profile Not Found"
         setProperty("reasonCode", "profile_not_found")
+      }
+
+  /**
+   * 이메일 변경이 **거절**된 경우들.
+   *
+   * 세 가지 사유(다른 사람이 사용 중 · 이미 진행 중 · 현재와 동일)를 전부 **409** 로 준다.
+   * 셋 다 "요청 형식은 맞는데 지금 상태에서는 할 수 없다" 이고, 클라이언트가 구분해야 할 것은
+   * 상태코드가 아니라 `reasonCode` 다. 상태코드를 쪼개면 FE 가 코드마다 분기하게 되고,
+   * 사유가 하나 늘 때마다 그 분기가 또 늘어난다.
+   */
+  @ExceptionHandler(EmailAlreadyRegisteredException::class)
+  @ResponseStatus(HttpStatus.CONFLICT)
+  fun handleEmailInUse(e: EmailAlreadyRegisteredException): ProblemDetail =
+    ProblemDetail
+      .forStatusAndDetail(HttpStatus.CONFLICT, "이미 사용 중인 이메일입니다.")
+      .apply {
+        title = "Email Already In Use"
+        setProperty("reasonCode", "email_already_in_use")
+      }
+
+  @ExceptionHandler(UserProfileDomainException.EmailChangeInProgress::class)
+  @ResponseStatus(HttpStatus.CONFLICT)
+  fun handleEmailChangeInProgress(e: UserProfileDomainException.EmailChangeInProgress): ProblemDetail =
+    ProblemDetail
+      .forStatusAndDetail(
+        HttpStatus.CONFLICT,
+        "이미 처리 중인 이메일 변경이 있습니다. 반영이 끝난 뒤 다시 시도해 주세요.",
+      ).apply {
+        title = "Email Change In Progress"
+        setProperty("reasonCode", "email_change_in_progress")
+      }
+
+  @ExceptionHandler(UserProfileDomainException.EmailUnchanged::class)
+  @ResponseStatus(HttpStatus.CONFLICT)
+  fun handleEmailUnchanged(e: UserProfileDomainException.EmailUnchanged): ProblemDetail =
+    ProblemDetail
+      .forStatusAndDetail(HttpStatus.CONFLICT, "현재 이메일과 동일합니다.")
+      .apply {
+        title = "Email Unchanged"
+        setProperty("reasonCode", "email_unchanged")
+      }
+
+  /**
+   * 아직 Keycloak 신원이 없는 프로필의 이메일 변경 시도.
+   *
+   * **422 다.** 요청은 유효하고 충돌도 아니지만, 이 자원이 그 연산을 받을 수 있는 상태가 아니다.
+   * 해법도 다르다 — 다시 시도하는 게 아니라 가입을 마쳐야 한다.
+   */
+  @ExceptionHandler(UserProfileDomainException.IdentityNotReady::class)
+  @ResponseStatus(HttpStatus.UNPROCESSABLE_ENTITY)
+  fun handleIdentityNotReady(e: UserProfileDomainException.IdentityNotReady): ProblemDetail =
+    ProblemDetail
+      .forStatusAndDetail(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        "가입이 아직 완료되지 않아 이메일을 변경할 수 없습니다.",
+      ).apply {
+        title = "Identity Not Ready"
+        setProperty("reasonCode", "identity_not_ready")
       }
 
   /**
@@ -141,6 +229,7 @@ class ProfileController(
   private fun MyProfileResult.toResponse(): ProfileResponse =
     ProfileResponse(
       email = email,
+      pendingEmail = pendingEmail,
       displayName = displayName,
       locale = locale,
       onboardingState = onboardingState,
@@ -174,6 +263,8 @@ data class AcceptConsentRequest(
 
 data class ProfileResponse(
   val email: String,
+  /** 반영 대기 중인 이메일. 클라이언트가 "변경 처리 중" 을 표시하는 근거다. */
+  val pendingEmail: String?,
   val displayName: String,
   val locale: String,
   val onboardingState: String,
@@ -186,4 +277,22 @@ data class ConsentResponse(
   val acceptedAt: Instant,
   /** 현재 약관 기준 유효 여부. **서버가 계산한다** — 클라이언트가 버전을 비교하지 않게. */
   val valid: Boolean,
+)
+
+/**
+ * 이메일 변경 요청 본문.
+ *
+ * `@Email` 형식 검증은 여기서 한다 — 도메인은 blank 만 막는다. 형식은 표현 계층의 관심사이고,
+ * 무엇이 유효한 주소인지의 최종 판정은 결국 Keycloak(과 실제 메일 발송)이 한다.
+ */
+data class ChangeEmailRequest(
+  @field:NotBlank(message = "이메일은 필수입니다")
+  @field:Email(message = "이메일 형식이 올바르지 않습니다")
+  val newEmail: String,
+)
+
+/** 확정 값과 대기 값을 함께 준다 — 이유는 `EmailChangeResult` KDoc. */
+data class EmailChangeResponse(
+  val email: String,
+  val pendingEmail: String?,
 )

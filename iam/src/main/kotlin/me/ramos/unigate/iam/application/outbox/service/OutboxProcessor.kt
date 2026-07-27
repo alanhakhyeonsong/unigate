@@ -8,6 +8,7 @@ import me.ramos.unigate.iam.application.tenant.dto.CreateTenantGroupPayload
 import me.ramos.unigate.iam.application.tenant.dto.GroupMembershipPayload
 import me.ramos.unigate.iam.application.tenant.port.outbound.TenantRepositoryPort
 import me.ramos.unigate.iam.application.user.dto.CreateKeycloakUserPayload
+import me.ramos.unigate.iam.application.user.dto.UpdateKeycloakEmailPayload
 import me.ramos.unigate.iam.application.user.port.outbound.IdentityAlreadyExistsException
 import me.ramos.unigate.iam.application.user.port.outbound.IdentityProviderPort
 import me.ramos.unigate.iam.application.user.port.outbound.IdentityProviderUnavailableException
@@ -15,6 +16,7 @@ import me.ramos.unigate.iam.application.user.port.outbound.PayloadSerializerPort
 import me.ramos.unigate.iam.application.user.port.outbound.UserProfileRepositoryPort
 import me.ramos.unigate.iam.domain.audit.enums.AuditEventType
 import me.ramos.unigate.iam.domain.audit.model.AuditEvent
+import me.ramos.unigate.iam.domain.shared.vo.UserRef
 import me.ramos.unigate.iam.domain.tenant.enums.TenantStatus
 import me.ramos.unigate.iam.domain.tenant.vo.TenantId
 import me.ramos.unigate.iam.domain.user.enums.OnboardingState
@@ -98,7 +100,12 @@ class OutboxProcessor(
           outcome.reason,
           outcome.exceptionClass,
         )
-        outcome.onPermanentFailure(record.payload)
+        // ⚠️ 보상이 터져도 **레코드는 DEAD 로 확정한다.**
+        // 여기서 예외가 나가면 트랜잭션이 롤백돼 클레임과 attempts 증가까지 사라지고,
+        // 같은 레코드를 영원히 다시 집는다(P9b 가 고친 그 루프). 보상 실패는 로컬 상태를
+        // 못 되돌린 것이지, **다시 시도할 이유는 아니다** — 운영자가 DLQ 에서 보게 둔다.
+        runCatching { outcome.onPermanentFailure(record.payload) }
+          .onFailure { log.error("outbox 보상 실패 — 레코드는 DEAD 로 확정한다 id={}", record.id, it) }
         outboxPort.update(record.failedPermanently(now, outcome.reason, outcome.exceptionClass))
       }
 
@@ -148,27 +155,64 @@ class OutboxProcessor(
         OutboxEventType.CREATE_KEYCLOAK_GROUP -> createTenantGroup(record.payload)
         OutboxEventType.ADD_GROUP_MEMBER -> syncGroupMember(record.payload, add = true)
         OutboxEventType.REMOVE_GROUP_MEMBER -> syncGroupMember(record.payload, add = false)
+        OutboxEventType.UPDATE_KEYCLOAK_EMAIL -> updateKeycloakEmail(record.payload)
       }
       ProcessOutcome.Success
     } catch (e: IdentityAlreadyExistsException) {
-      // 사용자에게 정정을 요구해야 하는 실패. 프로필도 실패 상태로 옮기고 감사에 남긴다.
-      ProcessOutcome.Permanent("identity_already_exists", e.javaClass.name) { payload ->
-        markProfileIdentityFailed(payload)
-        // ⚠️ 이 감사는 **예외를 삼킨 경로**에서 남긴다. 이 트랜잭션은 롤백되지 않고 커밋되므로
-        // (실패를 상태로 기록하는 경로이므로) 감사도 함께 커밋된다.
-        recordIdentityFailure(payload, "identity_already_exists")
-      }
+      // 사용자에게 정정을 요구해야 하는 실패.
+      ProcessOutcome.Permanent(
+        "identity_already_exists",
+        e.javaClass.name,
+        compensationFor(record.eventType, "identity_already_exists"),
+      )
     } catch (e: IdentityProviderUnavailableException) {
       ProcessOutcome.Retryable("identity_provider_unavailable", e.javaClass.name)
     } catch (e: Exception) {
       // 여기가 예전에 비어 있던 자리다. 위 KDoc 참조.
       log.error("outbox 미분류 실패 — DEAD 로 보낸다 id={}", record.id, e)
-      ProcessOutcome.Permanent("unclassified_failure", e.javaClass.name) { payload ->
-        // 사용자 입장에서는 "가입했는데 아무 일도 안 일어남" 이 된다. 원인이 무엇이든
-        // 프로필을 실패 상태로 옮겨야 알릴 수 있다.
+      ProcessOutcome.Permanent(
+        "unclassified_failure",
+        e.javaClass.name,
+        compensationFor(record.eventType, "unclassified_failure"),
+      )
+    }
+
+  /**
+   * 영구 실패 시 **되돌릴 로컬 상태**를 이벤트 타입별로 고른다.
+   *
+   * ## 왜 타입별이어야 하나 (겪은 결함)
+   * 예전에는 보상이 하나뿐이었고, 그것이 payload 를 **항상 가입 payload 로 역직렬화**했다.
+   * 그래서 group 이벤트가 영구 실패하면 보상 안에서 역직렬화가 터지고, 그 예외가
+   * `@Transactional(REQUIRES_NEW)` 를 롤백시켜 **클레임과 attempts 증가까지 되돌렸다** —
+   * P9b 가 고친 무한 재시도 루프가 다른 경로로 되살아난 것이다.
+   *
+   * 이벤트 타입이 늘 때마다 이 `when` 이 컴파일 에러로 결정을 요구한다. "무엇을 되돌릴 것인가"
+   * 는 지시마다 다르므로, 잊지 못하게 만드는 편이 맞다.
+   */
+  private fun compensationFor(
+    eventType: OutboxEventType,
+    reasonCode: String,
+  ): (String) -> Unit =
+    when (eventType) {
+      // 가입: 프로필을 실패 상태로 옮겨 사용자에게 알린다.
+      OutboxEventType.CREATE_KEYCLOAK_USER -> { payload ->
         markProfileIdentityFailed(payload)
-        recordIdentityFailure(payload, "unclassified_failure")
+        // ⚠️ 이 감사는 **예외를 삼킨 경로**에서 남긴다. 이 트랜잭션은 롤백되지 않고 커밋되므로
+        // (실패를 상태로 기록하는 경로이므로) 감사도 함께 커밋된다.
+        recordIdentityFailure(payload, reasonCode)
       }
+
+      // 이메일 변경: 요청을 버린다. 안 버리면 도메인이 "진행 중" 으로 보고 다음 요청을 막는다.
+      OutboxEventType.UPDATE_KEYCLOAK_EMAIL -> { payload ->
+        cancelPendingEmailChange(payload, reasonCode)
+      }
+
+      // 되돌릴 로컬 상태가 없다. 테넌트는 PENDING 에 머물고 group 멤버십은 반영되지 않은 채
+      // 남는데, **그게 사실과 일치하는 상태**다. 레코드는 DEAD 로 남아 DLQ 에서 보인다.
+      OutboxEventType.CREATE_KEYCLOAK_GROUP,
+      OutboxEventType.ADD_GROUP_MEMBER,
+      OutboxEventType.REMOVE_GROUP_MEMBER,
+      -> { _ -> }
     }
 
   /**
@@ -295,6 +339,68 @@ class OutboxProcessor(
     } else {
       identityProviderPort.removeUserFromTenantGroup(command.tenantId, command.userRef)
     }
+  }
+
+  /**
+   * Keycloak 에 이메일 변경을 반영하고, 성공하면 **요청 값을 확정 값으로 승격**한다.
+   *
+   * ## 순서가 중요하다 — Keycloak 먼저
+   * 로컬을 먼저 확정하면, Keycloak 반영이 실패했을 때 "IAM 은 새 주소, Keycloak 은 옛 주소" 가
+   * 되고 그 어긋남을 되돌릴 근거가 사라진다. 외부 반영이 성공한 뒤에 로컬을 맞추면 최악의
+   * 경우가 **"Keycloak 은 반영됐는데 로컬 커밋 실패"** 인데, 그건 재시도가 멱등하게 고친다
+   * (`updateEmail` 이 이미 반영된 상태를 성공으로 처리하므로).
+   */
+  private fun updateKeycloakEmail(payload: String) {
+    val command = payloadSerializer.deserialize(payload, UpdateKeycloakEmailPayload::class.java)
+
+    identityProviderPort.updateEmail(command.userRef, command.newEmail)
+
+    val profile =
+      userProfileRepository.findByUserRef(UserRef(command.userRef))
+        ?: error("outbox 지시에 대응하는 프로필이 없습니다: userRef=${command.userRef}")
+
+    val previousEmail = profile.email
+    profile.applyEmailChange()
+    val saved = userProfileRepository.save(profile)
+
+    recordAuditEventOutPort.record(
+      AuditEvent(
+        type = AuditEventType.EMAIL_CHANGED,
+        // actorRef 가 null 이다 — 이 사건을 일으킨 것은 워커다. 요청한 사람은
+        // EMAIL_CHANGE_REQUESTED 에 남아 있고, 둘은 target_ref 로 이어진다.
+        targetRef = command.userRef,
+        targetEmail = saved.email,
+        detail = mapOf("before" to previousEmail, "after" to saved.email),
+      ),
+    )
+  }
+
+  /**
+   * 보상 — 반영 대기 중인 이메일 변경을 취소한다.
+   *
+   * 이걸 빠뜨리면 `pendingEmail` 이 영원히 남고, 도메인이 "진행 중" 으로 보고 **다음 변경 요청을
+   * 계속 거절**한다. 사용자 입장에서는 "한 번 실패한 뒤로 영영 이메일을 못 바꾸는" 상태가 된다.
+   */
+  private fun cancelPendingEmailChange(
+    payload: String,
+    reasonCode: String,
+  ) {
+    val command = payloadSerializer.deserialize(payload, UpdateKeycloakEmailPayload::class.java)
+    val profile = userProfileRepository.findByUserRef(UserRef(command.userRef)) ?: return
+
+    profile.cancelEmailChange()
+    val saved = userProfileRepository.save(profile)
+
+    recordAuditEventOutPort.record(
+      AuditEvent(
+        type = AuditEventType.EMAIL_CHANGE_FAILED,
+        targetRef = command.userRef,
+        // 확정 값(= 그대로 유지된 주소)을 남긴다. 시도했던 값은 detail 에 있다.
+        targetEmail = saved.email,
+        reasonCode = reasonCode,
+        detail = mapOf("requestedEmail" to command.newEmail),
+      ),
+    )
   }
 
   /**

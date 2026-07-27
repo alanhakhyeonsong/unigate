@@ -1,6 +1,8 @@
 package me.ramos.unigate.iam.application.user.port.inbound
 
 import me.ramos.unigate.iam.application.user.dto.AcceptConsentCommand
+import me.ramos.unigate.iam.application.user.dto.ChangeMyEmailCommand
+import me.ramos.unigate.iam.application.user.dto.EmailChangeResult
 import me.ramos.unigate.iam.application.user.dto.MyProfileResult
 import me.ramos.unigate.iam.application.user.dto.UpdateMyProfileCommand
 
@@ -49,4 +51,21 @@ interface AcceptConsentInPort {
    * @throws me.ramos.unigate.iam.application.user.service.ConsentVersionMismatchException
    */
   fun accept(command: AcceptConsentCommand): MyProfileResult
+}
+
+/** 호출자 본인의 이메일 변경을 **접수**하는 InPort. */
+interface ChangeMyEmailInPort {
+  /**
+   * 이메일 변경을 요청한다. **이 호출이 끝나도 아직 바뀌지 않았다.**
+   *
+   * Keycloak 반영은 outbox 워커가 하므로, 반환 시점에는 요청만 기록된 상태다. 실패하면 워커가
+   * 요청을 취소한다(보상). 즉 이 API 의 성공은 "접수됨" 이지 "변경됨" 이 아니다.
+   *
+   * @return 확정 값과 대기 값을 함께 담은 결과
+   * @throws me.ramos.unigate.iam.application.user.service.EmailAlreadyRegisteredException
+   *   IAM DB 기준 다른 사용자가 이미 쓰는 주소(1차 방어)
+   * @throws me.ramos.unigate.iam.domain.user.exception.UserProfileDomainException
+   *   신원 미준비·중복 요청·동일 값
+   */
+  fun requestChange(command: ChangeMyEmailCommand): EmailChangeResult
 }

@@ -8,6 +8,7 @@ import me.ramos.unigate.iam.application.user.dto.ConsentResult
 import me.ramos.unigate.iam.application.user.dto.MyProfileResult
 import me.ramos.unigate.iam.application.user.dto.UpdateMyProfileCommand
 import me.ramos.unigate.iam.application.user.port.inbound.AcceptConsentInPort
+import me.ramos.unigate.iam.application.user.port.inbound.ChangeMyEmailInPort
 import me.ramos.unigate.iam.application.user.port.inbound.GetMyProfileInPort
 import me.ramos.unigate.iam.application.user.port.inbound.UpdateMyProfileInPort
 import me.ramos.unigate.iam.application.user.service.ConsentVersionMismatchException
@@ -66,6 +67,9 @@ class ProfileControllerTest {
 
   @MockkBean
   private lateinit var acceptConsentInPort: AcceptConsentInPort
+
+  @MockkBean
+  private lateinit var changeMyEmailInPort: ChangeMyEmailInPort
 
   // ── 인가 경계 ────────────────────────────────────────────────────────────
 
@@ -202,6 +206,7 @@ class ProfileControllerTest {
   private fun profileResult(): MyProfileResult =
     MyProfileResult(
       email = "alice@example.local",
+      pendingEmail = null,
       displayName = "Alice",
       locale = "ko-KR",
       onboardingState = "ACTIVE",

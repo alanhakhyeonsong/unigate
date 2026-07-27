@@ -33,7 +33,10 @@ class UserProfileEntity(
   @GeneratedValue(strategy = GenerationType.IDENTITY)
   val id: Long? = null,
   @Column(name = "email", nullable = false, unique = true, length = 255)
-  val email: String,
+  var email: String,
+  /** 반영 대기 중인 이메일. UNIQUE 를 걸지 않은 이유는 `V6` 마이그레이션 주석 참조. */
+  @Column(name = "pending_email", length = 255)
+  var pendingEmail: String? = null,
   @Column(name = "user_ref", unique = true, length = 64)
   var userRef: String? = null,
   @Enumerated(EnumType.STRING)

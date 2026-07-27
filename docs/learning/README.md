@@ -34,6 +34,7 @@
 | [22](22-outbox-dlq-and-circuit-breaker.md) | 죽지 못하는 레코드 — outbox DLQ 와 회로 차단기 | 9 | 학습중 | 롤백은 **실패 기록까지 되돌린다**. 재시도 상한을 줄이는 결정은 차단기와 짝일 때만 안전하고, 401 을 "등록 실패" 로 오진했다 |
 | [23](23-coarse-authz-tenant-gate.md) | 게이트웨이의 첫 인가 — coarse 테넌트 게이트와 "제거 후 재주입" | 9 | 학습중 | 게이트의 절반은 통과·거부가 아니라 **인입 헤더를 지우는 것**. 우회하면 위조 헤더가 그대로 200 이 된다 — 막는 건 **검사하는 엔드포인트뿐**이었다 |
 | [24](24-fail-closed-by-default-tenant-guard.md) | 잊으면 닫히는 기본값 — 다운스트림 테넌트 격리를 구조로 옮기기 | 9 | 학습중 | 검사를 컨트롤러에서 **인가 규칙과 저장소로** 옮긴다. 잊었을 때의 결과가 데이터 유출이 아니라 **403 과 컴파일 에러**가 되게 |
+| [25](25-email-change-outbox-compensation.md) | 되돌릴 것이 있는 outbox — 이메일 변경과 보상 | 9+ | 학습중 | 어려운 건 성공이 아니라 **실패한 뒤의 상태**다. 확정 값과 요청 값을 나눠 **보상을 필드 하나 지우기**로 줄였다 |
 
 상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
 
@@ -99,6 +100,7 @@
 - [x] **fine 인가를 다운스트림에 두는 것의 실제 비용** — 우회 직격으로 확인했다. 검사하지 않는 엔드포인트는 그대로 뚫린다 → [23](23-coarse-authz-tenant-gate.md) §4.7~4.8
 - [x] **default-deny 로 반복을 없애기** — opt-in 은 잊으면 열리고 opt-out 은 잊으면 닫힌다 → [24](24-fail-closed-by-default-tenant-guard.md)
 - [x] **인라인 value class 를 주입 자리에 쓰면 안 되는 이유(재발)** — 파라미터 타입이 `String` 으로 펴진다 → [24](24-fail-closed-by-default-tenant-guard.md) §5 · [20](20-caller-identity-and-idor-free-design.md) §5 함정 1
+- [x] **보상 트랜잭션** — outbox 로 두 시스템을 쓸 때 영구 실패에서 로컬을 되돌리는 법 → [25](25-email-change-outbox-compensation.md)
 - [ ] **claim 기반 인가의 반영 지연** — 멤버십을 해제해도 토큰 만료(5분) 전까지 통과한다. 즉시 차단 수단은 아직 없다
 - [ ] **세션 토큰 갱신 경로의 재발** — repository 로 토큰을 직접 꺼내면 만료를 갱신하지 못한다. [04](04-oauth2-authorization-code-bff.md) §6 과 [23](23-coarse-authz-tenant-gate.md) §4.6 이 **같은 실패의 두 번째 발생**이다
 

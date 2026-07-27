@@ -170,6 +170,56 @@ class KeycloakIdentityProviderAdapter(
   }
 
   /**
+   * 기존 사용자의 이메일을 바꾼다.
+   *
+   * ## 충돌을 **먼저** 확인한다
+   * Keycloak 의 `PUT /users/{id}` 는 이메일이 다른 사용자와 겹치면 409 를 준다. 그런데 그 409 는
+   * 다른 이유(동시 수정 등)로도 날 수 있어 상태코드만으로는 "정정이 필요한 충돌" 인지 알 수 없다.
+   * 그래서 **소유자를 조회해** 판정한다 — 그 주소를 이미 쓰는 사람이 나 자신이면 멱등 성공,
+   * 남이면 영구 실패다.
+   *
+   * ⚠️ 조회와 갱신 사이에 경합이 있다(TOCTOU). 그 사이에 다른 사용자가 같은 주소를 가져가면
+   * PUT 이 409 를 받는데, 그때도 **영구 실패로 판정**한다 — 재시도해도 그 주소는 이미 남의 것이다.
+   */
+  override fun updateEmail(
+    userRef: String,
+    newEmail: String,
+  ) {
+    // 1) 이미 그 주소를 쓰는 사람이 나 자신이면 할 일이 없다(멱등 재시도).
+    findByEmail(newEmail)?.let { owner ->
+      if (owner.value == userRef) {
+        log.info("이미 반영된 이메일 변경 — 멱등 처리한다")
+        return
+      }
+      throw IdentityAlreadyExistsException(newEmail)
+    }
+
+    // 2) 갱신. username 은 건드리지 않는다(포트 KDoc 참조).
+    try {
+      restClient
+        .put()
+        .uri("${properties.adminRealmUrl()}/users/$userRef")
+        .header("Authorization", "Bearer ${tokenProvider.accessToken()}")
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(UpdateEmailPayload(email = newEmail, emailVerified = false))
+        .retrieve()
+        .toBodilessEntity()
+    } catch (e: RestClientResponseException) {
+      when (e.statusCode) {
+        HttpStatus.UNAUTHORIZED -> {
+          tokenProvider.invalidate()
+          throw toUnavailable("Keycloak 이메일 변경에 실패했습니다 (HTTP 401)", e)
+        }
+        // 1)과 2) 사이에 남이 가져갔다. 재시도해도 결과는 같다.
+        HttpStatus.CONFLICT -> throw IdentityAlreadyExistsException(newEmail)
+        else -> throw toUnavailable("Keycloak 이메일 변경에 실패했습니다 (HTTP ${e.statusCode.value()})", e)
+      }
+    } catch (e: RestClientException) {
+      throw toUnavailable("Keycloak 이메일 변경에 실패했습니다", e)
+    }
+  }
+
+  /**
    * 사용자를 테넌트 group 에서 뺀다 (Phase 9d).
    *
    * ⚠️ **404 를 성공으로 처리한다.** 제거는 "그 상태로 만든다" 는 뜻이지 "지금 있어야 한다" 가
@@ -368,6 +418,18 @@ class KeycloakIdentityProviderAdapter(
   internal data class KeycloakGroup(
     val id: String = "",
     val name: String = "",
+  )
+
+  /**
+   * 이메일 변경 요청 본문.
+   *
+   * **필요한 두 필드만 보낸다.** Keycloak 의 사용자 갱신은 부분 갱신이라 보내지 않은 필드는
+   * 그대로 남는다. 전체 표현을 조회해 되보내면 그 사이 다른 경로로 바뀐 값을 **되돌려 놓는**
+   * lost update 가 된다.
+   */
+  internal data class UpdateEmailPayload(
+    val email: String,
+    val emailVerified: Boolean,
   )
 
   /** 조회 응답에서 우리가 쓰는 필드만. Keycloak 의 나머지 필드에 의존하지 않는다. */
