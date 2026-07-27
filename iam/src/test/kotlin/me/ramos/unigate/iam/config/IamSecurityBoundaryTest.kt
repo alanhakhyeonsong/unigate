@@ -3,10 +3,12 @@ package me.ramos.unigate.iam.config
 import com.ninjasquad.springmockk.MockkBean
 import io.mockk.every
 import me.ramos.unigate.iam.adapter.iamIn.CallerProbeController
+import me.ramos.unigate.iam.adapter.iamIn.OutboxAdminController
 import me.ramos.unigate.iam.adapter.iamIn.ProblemDetailAccessDeniedHandler
 import me.ramos.unigate.iam.adapter.iamIn.ProblemDetailAuthenticationEntryPoint
 import me.ramos.unigate.iam.adapter.iamIn.RegisterController
 import me.ramos.unigate.iam.adapter.keycloakAdminOut.KeycloakAdminProperties
+import me.ramos.unigate.iam.application.outbox.service.OutboxAdminService
 import me.ramos.unigate.iam.application.user.dto.RegisterUserResult
 import me.ramos.unigate.iam.application.user.port.inbound.RegisterUserInPort
 import org.junit.jupiter.api.Test
@@ -15,6 +17,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest
 import org.springframework.context.annotation.Import
 import org.springframework.http.MediaType
+import org.springframework.security.core.authority.SimpleGrantedAuthority
 import org.springframework.test.context.ActiveProfiles
 import org.springframework.test.context.TestPropertySource
 import org.springframework.test.web.servlet.MockMvc
@@ -42,7 +45,9 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
  *
  * 계층: L3(슬라이스). 외부 의존이 없어 `@Tag("testcontainers")` 를 붙이지 않는다 — CI 게이트에서 돈다.
  */
-@WebMvcTest(controllers = [RegisterController::class, CallerProbeController::class])
+@WebMvcTest(
+  controllers = [RegisterController::class, CallerProbeController::class, OutboxAdminController::class],
+)
 // Phase 8e: `IamSecurityConfig` 가 Problem Detail 핸들러 두 개를 주입받으므로 함께 올린다.
 // 빠뜨리면 컨텍스트 자체가 뜨지 않아 **모든 테스트가 한꺼번에 실패**한다.
 @Import(
@@ -71,6 +76,9 @@ class IamSecurityBoundaryTest {
 
   @MockkBean
   private lateinit var registerUserInPort: RegisterUserInPort
+
+  @MockkBean
+  private lateinit var outboxAdminService: OutboxAdminService
 
   @Test
   fun `가입은 인증 없이 열려 있다`() {
@@ -155,6 +163,47 @@ class IamSecurityBoundaryTest {
       .andExpect(status().isNotFound)
   }
 
+  // ── Phase 9c: 관리 API 인가 경계 ──────────────────────────────────────
+
+  @Test
+  fun `관리 API 는 인증만으로는 통과하지 못한다`() {
+    // ⚠️ 이 테스트가 P9c 의 핵심이다.
+    //
+    // P8e 까지 IAM 의 인가 규칙은 `anyRequest().authenticated()` 하나뿐이었다. 그 상태로 관리
+    // API 를 열면 **인증된 아무 사용자나** 남의 자원을 조작할 수 있다. GW 를 우회해 :8090 을
+    // 직접 때리는 경로가 실재하므로(P8f 실측), 여기서 막지 못하면 막을 곳이 없다.
+    mockMvc
+      .perform(get("/iam/admin/outbox/dead").with(callerToken()))
+      .andExpect(status().isForbidden)
+  }
+
+  @Test
+  fun `관리자 권한이 있으면 관리 API 를 통과한다`() {
+    every { outboxAdminService.listDead(any()) } returns emptyList()
+
+    mockMvc
+      .perform(get("/iam/admin/outbox/dead").with(adminToken()))
+      .andExpect(status().isOk)
+  }
+
+  @Test
+  fun `관리 API 는 토큰이 아예 없으면 403 이 아니라 401 이다`() {
+    // 403 은 "누군지 알지만 권한이 없다", 401 은 "누군지 모른다" 다. 이 구분이 무너지면
+    // 클라이언트가 재로그인해야 할 상황에서 엉뚱하게 권한 요청 안내를 하게 된다.
+    mockMvc
+      .perform(get("/iam/admin/outbox/dead"))
+      .andExpect(status().isUnauthorized)
+  }
+
+  @Test
+  fun `관리 경로는 접두사 전체가 막힌다 — 새 엔드포인트를 잊어도 안전하다`() {
+    // 아직 만들지 않은 관리 경로다. 규칙을 엔드포인트마다 등록하는 방식이었다면 여기가
+    // 인증만으로 뚫렸을 것이다. 접두사로 막으면 **잊어도 안전한 쪽으로** 실패한다.
+    mockMvc
+      .perform(get("/iam/admin/tenants/some-tenant/members").with(callerToken()))
+      .andExpect(status().isForbidden)
+  }
+
   /**
    * 게이트웨이가 relay 했을 법한 토큰을 흉내 낸다.
    *
@@ -174,7 +223,26 @@ class IamSecurityBoundaryTest {
           .audience(listOf("unigate-iam"))
       }
 
+  /**
+   * 관리자 권한을 가진 호출자.
+   *
+   * ⚠️ `authorities(...)` 로 권한을 **직접 지정**한다. `jwt()` post-processor 는 우리
+   * [me.ramos.unigate.iam.config.KeycloakRealmRoleConverter] 를 거치지 않으므로,
+   * `realm_access` 클레임을 넣어도 권한이 생기지 않는다. 여기서 검증하는 것은 **경로 규칙**이고,
+   * 클레임 파싱은 `KeycloakRealmRoleConverterTest` 가 따로 겨냥한다.
+   */
+  private fun adminToken(): RequestPostProcessor =
+    org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors
+      .jwt()
+      .jwt { builder ->
+        builder
+          .subject(ADMIN_SUBJECT)
+          .claim("preferred_username", "carol")
+          .audience(listOf("unigate-iam"))
+      }.authorities(SimpleGrantedAuthority("unigate-admin"))
+
   companion object {
     private const val CALLER_SUBJECT = "11111111-2222-3333-4444-555555555555"
+    private const val ADMIN_SUBJECT = "99999999-8888-7777-6666-555555555555"
   }
 }

@@ -16,6 +16,7 @@ import org.springframework.security.oauth2.jwt.JwtClaimValidator
 import org.springframework.security.oauth2.jwt.JwtDecoder
 import org.springframework.security.oauth2.jwt.JwtValidators
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter
 import org.springframework.security.web.AuthenticationEntryPoint
 import org.springframework.security.web.SecurityFilterChain
 import org.springframework.security.web.access.AccessDeniedHandler
@@ -53,6 +54,7 @@ class IamSecurityConfig(
   fun iamSecurityFilterChain(
     http: HttpSecurity,
     jwtDecoder: JwtDecoder,
+    jwtAuthenticationConverter: JwtAuthenticationConverter,
     authenticationEntryPoint: AuthenticationEntryPoint,
     accessDeniedHandler: AccessDeniedHandler,
   ): SecurityFilterChain =
@@ -74,11 +76,29 @@ class IamSecurityConfig(
           authorize.requestMatchers(*LOCAL_ONLY_PUBLIC_PATHS).permitAll()
         }
 
+        // ── 관리 API (Phase 9c) ─────────────────────────────────────────────
+        // ⚠️ **여기가 P8e 와 결정적으로 다른 지점이다.**
+        //
+        // 프로필 API 는 대상을 토큰 `sub` 로만 정해서 인가 검사가 아예 필요 없었다
+        // (docs/learning/20 — IDOR 이 성립할 자리가 없다). 관리 API 는 **남의 자원**을 다루므로
+        // 그 전략이 통하지 않고, 인가가 **명시적으로 보여야** 한다.
+        //
+        // 그리고 이 규칙은 게이트웨이의 coarse 게이트(P9f)와 **중복이지만 중복이어야 한다.**
+        // GW 우회로 :8090 을 직접 때리는 경로가 실재하므로(P8f 실측), GW 는 "빨리 거절" 이고
+        // 최종 방어선은 여기다.
+        authorize.requestMatchers(ADMIN_PATHS).hasAuthority(ROLE_ADMIN)
+
         // 나머지는 전부 인증 필요 — **deny by default**. 새 엔드포인트를 추가하고 여기를 잊으면
         // 401 이 날 뿐, 조용히 공개되지는 않는다.
         authorize.anyRequest().authenticated()
       }.oauth2ResourceServer { oauth2 ->
-        oauth2.jwt { jwt -> jwt.decoder(jwtDecoder) }
+        oauth2.jwt { jwt ->
+          jwt.decoder(jwtDecoder)
+          // Keycloak 역할은 `realm_access.roles` 에 있어 Spring 기본 변환기가 보지 못한다.
+          // 이 줄이 없으면 위 hasAuthority 는 **항상 거짓**이고, 토큰에 역할이 분명히 있는데도
+          // 403 이 나간다([KeycloakRealmRoleConverter]).
+          jwt.jwtAuthenticationConverter(jwtAuthenticationConverter)
+        }
         // ⚠️ Phase 8e: 여기와 아래 exceptionHandling **둘 다** 지정해야 한다.
         // `oauth2ResourceServer` 는 자기 필터(BearerTokenAuthenticationFilter)가 인증에 실패했을 때
         // **자체 entryPoint** 를 쓴다. 그래서 exceptionHandling 만 바꾸면 "토큰이 잘못된" 401 은
@@ -91,6 +111,17 @@ class IamSecurityConfig(
         exceptions.authenticationEntryPoint(authenticationEntryPoint)
         exceptions.accessDeniedHandler(accessDeniedHandler)
       }.build()
+
+  /**
+   * JWT → `Authentication` 변환기. [KeycloakRealmRoleConverter] 를 끼워 realm 역할을 권한으로 만든다.
+   *
+   * 기본 구현을 그대로 쓰면 권한 목록이 **항상 비어** 관리 API 가 영영 403 이다.
+   */
+  @Bean
+  fun jwtAuthenticationConverter(realmRoleConverter: KeycloakRealmRoleConverter): JwtAuthenticationConverter =
+    JwtAuthenticationConverter().apply {
+      setJwtGrantedAuthoritiesConverter(realmRoleConverter)
+    }
 
   /**
    * relay 된 사용자 JWT 검증기.
@@ -169,5 +200,22 @@ class IamSecurityConfig(
 
     /** local 프로파일에서만 열리는 검증용 프로브 (`ThreadProbeController`). */
     private val LOCAL_ONLY_PUBLIC_PATHS = arrayOf("/debug/**")
+
+    /**
+     * 관리 API 경로 (Phase 9c).
+     *
+     * 개별 엔드포인트가 아니라 **접두사 전체**를 막는다. 관리 기능은 앞으로 계속 늘어나는데
+     * (DLQ 재처리 · 테넌트 · 멤버십 …), 하나씩 등록하는 방식이면 **새 컨트롤러를 추가하고 여기를
+     * 잊는 순간 인증만 하면 통과**한다. 접두사로 막으면 잊어도 안전한 쪽으로 실패한다.
+     */
+    private const val ADMIN_PATHS = "/iam/admin/**"
+
+    /**
+     * 관리자 realm 역할.
+     *
+     * ⚠️ `ROLE_` 접두사가 **없다.** Keycloak realm 의 역할 이름과 글자 그대로 일치시키기 위해
+     * `hasRole` 이 아니라 `hasAuthority` 를 쓴다 — 이유는 [KeycloakRealmRoleConverter] KDoc.
+     */
+    private const val ROLE_ADMIN = "unigate-admin"
   }
 }

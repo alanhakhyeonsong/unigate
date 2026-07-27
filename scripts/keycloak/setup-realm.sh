@@ -527,9 +527,34 @@ if [[ "$CREATE_TEST_USERS" == "true" ]]; then
     fi
   }
 
-  if step "테스트 사용자 alice(인가 성공) / bob(인가 실패) upsert"; then
+  # assign_realm_role <username> <role>
+  #
+  # 그룹이 아니라 **realm role 을 직접** 매핑한다. Phase 9c 의 관리 API 는 토큰의
+  # `realm_access.roles` 에 실린 역할로 인가하므로, 역할이 실제로 사용자에게 붙어 있어야 한다.
+  #
+  # ⚠️ 역할이 realm 에 정의만 되어 있고 아무에게도 할당되지 않으면 토큰에 실리지 않는다.
+  # 그러면 관리 API 는 **영원히 403** 이고, realm 관리 콘솔에서 역할이 보이므로
+  # "역할은 있는데 왜 안 되지" 로 헤매기 쉽다.
+  assign_realm_role() {
+    local username="$1" role="$2" uuid role_rep
+    uuid=$(api GET "/admin/realms/$REALM/users?username=$username&exact=true" | jq -r '.[0].id // empty')
+    if [[ -z "$uuid" ]]; then
+      warn "user '$username' 을 찾지 못해 role '$role' 매핑을 건너뜁니다."
+      return
+    fi
+    role_rep=$(api GET "/admin/realms/$REALM/roles/$role")
+    # role-mappings 는 이미 매핑돼 있어도 멱등하다.
+    api POST "/admin/realms/$REALM/users/$uuid/role-mappings/realm" "[$role_rep]" >/dev/null
+    ok "user '$username' -> realm role '$role'"
+  }
+
+  if step "테스트 사용자 alice(인가 성공) / bob(인가 실패) / carol(관리자) upsert"; then
     upsert_user "alice" "alice@example.local" "$GROUP_UUID"
     upsert_user "bob"   "bob@example.local"   ""
+    # carol 은 Phase 9c 관리 API 검증용이다. alice 에게 admin 을 얹지 않는 이유:
+    # alice 는 "일반 사용자" 시나리오의 기준점이라, 관리 권한을 주면 그 시나리오가 오염된다.
+    upsert_user "carol" "carol@example.local" "$GROUP_UUID"
+    assign_realm_role "carol" "$ROLE_ADMIN"
   fi
 else
   log "alpha 환경 — 테스트 사용자는 생성하지 않습니다."
