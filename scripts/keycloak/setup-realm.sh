@@ -10,7 +10,7 @@
 # 사용법:
 #   export KEYCLOAK_URL="https://<keycloak-host>"
 #   scripts/keycloak/setup-realm.sh --env local
-#   scripts/keycloak/setup-realm.sh --env alpha --alpha-host <alpha-ingress-host>
+#   scripts/keycloak/setup-realm.sh --env alpha --alpha-host <gw-host> --console-host <fe-host>
 #   scripts/keycloak/setup-realm.sh --env local --dry-run
 #
 # 주의: 실제 호스트명·계정·secret 은 이 파일에 하드코딩하지 않는다.
@@ -67,6 +67,7 @@ readonly MAX_TIME=30
 # ---------------------------------------------------------------------------
 TARGET_ENV=""
 ALPHA_HOST=""
+CONSOLE_HOST=""
 DRY_RUN="false"
 KEYCLOAK_URL="${KEYCLOAK_URL:-}"
 
@@ -76,7 +77,10 @@ usage() {
 
 옵션:
   --env <local|alpha>     대상 환경. local -> realm 'test', alpha -> realm 'unigate'
-  --alpha-host <host>     alpha ingress 호스트 (--env alpha 일 때 필수)
+  --alpha-host <host>     alpha 게이트웨이 ingress 호스트 (--env alpha 일 때 필수)
+  --console-host <host>   FE 콘솔 호스트 (선택). FE 를 게이트웨이와 다른 호스트에 두는 배포에서
+                          **로그아웃 후 돌아올 곳**으로 등록한다. 빠뜨리면 로그아웃이 게이트웨이
+                          호스트에 착지해 FE 로 돌아오지 못한다
   --keycloak-url <url>    Keycloak base URL (KEYCLOAK_URL 환경변수로도 지정 가능, 필수)
   --dry-run               변경 없이 수행할 작업만 출력
   -h, --help              도움말
@@ -93,6 +97,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --env)          TARGET_ENV="${2:-}"; shift 2 ;;
     --alpha-host)   ALPHA_HOST="${2:-}"; shift 2 ;;
+    --console-host) CONSOLE_HOST="${2:-}"; shift 2 ;;
     --keycloak-url) KEYCLOAK_URL="${2:-}"; shift 2 ;;
     --dry-run)      DRY_RUN="true"; shift ;;
     -h|--help)      usage; exit 0 ;;
@@ -125,9 +130,15 @@ case "$TARGET_ENV" in
       echo "오류: --env alpha 에는 --alpha-host <ingress-host> 가 필요합니다." >&2
       exit 1
     fi
+    # ⚠️ redirect URI 는 **게이트웨이만**이다. OAuth 콜백을 받는 것은 GW 이고, FE 는 토큰을
+    #    다루지 않는다(BFF). 여기에 FE 호스트를 넣으면 토큰이 브라우저로 흐르는 구성이 된다.
     REDIRECT_URIS='["https://'"$ALPHA_HOST$OAUTH_CALLBACK_PATH"'"]'
     WEB_ORIGINS='["https://'"$ALPHA_HOST"'"]'
+    # 로그아웃 착지점은 FE 가 있으면 FE 도 허용한다(## 구분자는 Keycloak 의 다중값 표기).
     POST_LOGOUT_URIS="https://$ALPHA_HOST/"
+    if [[ -n "${CONSOLE_HOST:-}" ]]; then
+      POST_LOGOUT_URIS="$POST_LOGOUT_URIS##https://$CONSOLE_HOST/"
+    fi
     ;;
   *)
     echo "오류: --env 는 local 또는 alpha 여야 합니다." >&2
