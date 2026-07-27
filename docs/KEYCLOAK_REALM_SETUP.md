@@ -36,6 +36,7 @@ Keycloak **인스턴스는 공유**하고 **realm으로 격리**한다. 로컬 �
 | Client (service account) | `unigate-iam` | IAM 서비스. Keycloak **Admin API를 호출하는** 주체 (§4.7) |
 | Protocol Mapper | `downstream-audience` | access token `aud`에 다운스트림 clientId 주입 |
 | Protocol Mapper | `iam-audience` | access token `aud`에 `unigate-iam` 주입 — IAM Resource Server 검증용 (§4.8) |
+| Protocol Mapper | `tenant-groups` | access token `groups`에 소속 group 경로 주입 — 테넌트 전파용 (§4.9) |
 | Realm roles | `unigate-user`, `unigate-admin` | 인가 정책 골격 |
 | Group | `unigate-users` | `unigate-user` 역할 자동 부여 |
 | Users (local 전용) | `alice`, `bob`, `carol` | 인가 성공/실패/관리자 케이스 |
@@ -288,6 +289,54 @@ client의 dedicated scope에서 동작한다. 사용자 토큰을 발급받는 �
 > `/iam/profile` 같은 인증 라우트만 **전부 401**이다. 게이트웨이 로그에는 relay가 성공했다고 남고,
 > IAM 로그에도 스택트레이스가 없다. 토큰을 직접 디코드해 `aud`를 봐야 원인을 알 수 있다.
 > §6의 검증에서 `aud` 배열에 `unigate-iam`이 있는지 반드시 확인한다.
+
+### 4.9 Tenant Groups Mapper (테넌트 전파의 출발점) — Phase 9e
+
+§4.8과 **같은 자리에 붙지만 성격이 다르다.** audience는 **정적**이다(clientId가 고정). 테넌트 소속은
+**사용자마다 다르므로** 값을 고정할 수 없고, 그래서 Group Membership mapper를 쓴다 — 사용자가 속한
+group 경로를 그대로 claim에 실어준다.
+
+`Clients` → `unigate-client` → `Client scopes` → `unigate-client-dedicated` → `Add mapper` → `By configuration` → **Group Membership**
+
+| 항목 | 값 |
+|---|---|
+| Name | `tenant-groups` |
+| Token Claim Name | `groups` |
+| **Full group path** | **ON** ← 이게 핵심이다 |
+| Add to access token | **ON** |
+| Add to ID token | OFF |
+
+#### `Full group path`를 끄면 안 되는 이유
+
+OFF면 group **이름만** 실린다.
+
+```json
+// full.path = false — 이 group이 테넌트인지 아닌지 알 수 없다
+"groups": ["acme", "unigate-users"]
+
+// full.path = true — 접두사로 걸러낼 수 있다
+"groups": ["/tenants/acme", "/unigate-users"]
+```
+
+realm에는 테넌트가 아닌 group도 있다(`unigate-users`는 §4.6에서 만든 역할 매핑용이다). 경로가 없으면
+둘을 구분할 방법이 없어, GW의 테넌트 게이트가 **엉뚱한 group을 테넌트로 오인**하게 된다.
+
+IAM이 만드는 테넌트 group은 항상 `/tenants/{tenantId}` 형태다(`TenantId.GROUP_PREFIX`). 소비자는
+그 접두사로 필터링한다.
+
+#### 이 claim의 소비자
+
+| 누가 | 무엇에 쓰나 |
+|---|---|
+| **GW** (P9f) | coarse 게이트 — "요청 대상 테넌트에 소속이라도 하는가". 소속 밖이면 다운스트림 도달 전에 403 |
+| **다운스트림** | 검증된 `X-Tenant-Id`를 신뢰하고 fine 인가(자원 소유권)를 수행 |
+
+> ⚠️ **group 소속과 IAM DB의 멤버십은 별개로 갱신된다.** IAM이 SoT이고 Keycloak group은 그 투영본이며,
+> 반영은 outbox 워커를 거친다. 즉 **멤버십 변경이 토큰에 반영되기까지 지연이 있고**, 이미 발급된
+> 토큰은 만료(5분) 전까지 옛 소속을 담고 있다. 해제 직후에도 잠시 접근이 되는 것은 이 구조의 결과다.
+
+> ⚠️ 매퍼를 빠뜨리면 `groups` claim이 아예 없어 **GW의 테넌트 게이트가 모든 요청을 거부**하거나
+> (구현에 따라) 게이트를 못 걸게 된다. §6 검증에서 토큰에 `groups`가 있는지 확인한다.
 
 ---
 
