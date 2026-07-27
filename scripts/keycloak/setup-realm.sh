@@ -119,9 +119,18 @@ case "$TARGET_ENV" in
   local)
     REALM="test"
     CREATE_TEST_USERS="true"
-    REDIRECT_URIS='["http://localhost:8080'"$OAUTH_CALLBACK_PATH"'","http://127.0.0.1:8080'"$OAUTH_CALLBACK_PATH"'"]'
-    WEB_ORIGINS='["http://localhost:8080","http://127.0.0.1:8080"]'
-    POST_LOGOUT_URIS="http://localhost:8080/##http://127.0.0.1:8080/"
+    # ⚠️ **5173(Vite dev server)도 등록한다.**
+    #
+    # 샘플 FE 는 dev proxy 로 same-origin 을 만든다. 그때 브라우저가 보는 호스트는 5173 이고
+    # 프록시가 Host 를 그대로 넘기므로 **게이트웨이가 만드는 redirect_uri 도 5173** 이 된다.
+    # 여기에 5173 이 없으면 로그인 시도가 Keycloak 에서 `Invalid parameter: redirect_uri` 로
+    # 끊긴다 — 게이트웨이 로그에는 아무것도 안 남아서 원인을 찾는 데 시간이 걸린다.
+    #
+    # 대안은 프록시가 Host 를 8080 으로 바꾸는 것인데(changeOrigin), 그러면 로그인 후
+    # **8080 에 착지해 FE 를 벗어난다.** FE 안에서 흐름이 끝나는 편이 검증에 낫다.
+    REDIRECT_URIS='["http://localhost:8080'"$OAUTH_CALLBACK_PATH"'","http://127.0.0.1:8080'"$OAUTH_CALLBACK_PATH"'","http://localhost:5173'"$OAUTH_CALLBACK_PATH"'"]'
+    WEB_ORIGINS='["http://localhost:8080","http://127.0.0.1:8080","http://localhost:5173"]'
+    POST_LOGOUT_URIS="http://localhost:8080/##http://127.0.0.1:8080/##http://localhost:5173/"
     ;;
   alpha)
     REALM="unigate"
