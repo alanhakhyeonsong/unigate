@@ -5,6 +5,7 @@ import io.kotest.matchers.shouldBe
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import me.ramos.unigate.application.auth.exception.TokenVerificationException
 import me.ramos.unigate.application.auth.port.outbound.TokenVerifierPort
 import me.ramos.unigate.domain.auth.model.AuthenticatedPrincipal
 import org.springframework.cloud.gateway.filter.GatewayFilterChain
@@ -12,10 +13,11 @@ import org.springframework.http.HttpStatus
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest
 import org.springframework.mock.web.server.MockServerWebExchange
 import org.springframework.security.authentication.TestingAuthenticationToken
+import org.springframework.security.core.AuthenticationException
 import org.springframework.security.core.context.ReactiveSecurityContextHolder
 import org.springframework.security.core.context.SecurityContextImpl
 import org.springframework.security.oauth2.client.OAuth2AuthorizedClient
-import org.springframework.security.oauth2.client.web.server.ServerOAuth2AuthorizedClientRepository
+import org.springframework.security.oauth2.client.ReactiveOAuth2AuthorizedClientManager
 import org.springframework.security.oauth2.core.OAuth2AccessToken
 import org.springframework.web.server.ResponseStatusException
 import org.springframework.web.server.ServerWebExchange
@@ -34,6 +36,25 @@ import java.time.Instant
  */
 class TenantGateFilterTest :
   BehaviorSpec({
+    fun managerReturning(client: OAuth2AuthorizedClient?): ReactiveOAuth2AuthorizedClientManager {
+      val manager = mockk<ReactiveOAuth2AuthorizedClientManager>()
+      every { manager.authorize(any()) } returns
+        if (client == null) Mono.empty() else Mono.just(client)
+      return manager
+    }
+
+    fun authorizedClient(): OAuth2AuthorizedClient {
+      val client = mockk<OAuth2AuthorizedClient>()
+      every { client.accessToken } returns
+        OAuth2AccessToken(
+          OAuth2AccessToken.TokenType.BEARER,
+          "raw-token",
+          Instant.now(),
+          Instant.now().plusSeconds(300),
+        )
+      return client
+    }
+
     fun filterWith(tenants: List<String>): TenantGateFilter {
       val verifier = mockk<TokenVerifierPort>()
       coEvery { verifier.verify(any()) } returns
@@ -45,21 +66,19 @@ class TenantGateFilterTest :
           audiences = listOf("unigate-downstream-demo"),
         )
 
-      val client = mockk<OAuth2AuthorizedClient>()
-      every { client.accessToken } returns
-        OAuth2AccessToken(
-          OAuth2AccessToken.TokenType.BEARER,
-          "raw-token",
-          Instant.now(),
-          Instant.now().plusSeconds(300),
+      return TenantGateFilter(verifier, managerReturning(authorizedClient()))
+    }
+
+    /** 세션 토큰이 더 이상 쓸 수 없는 상태(만료·서명 불일치)를 재현한다. */
+    fun filterWithUnverifiableToken(): TenantGateFilter {
+      val verifier = mockk<TokenVerifierPort>()
+      coEvery { verifier.verify(any()) } throws
+        TokenVerificationException(
+          reasonCode = "token_expired",
+          message = "토큰이 만료되었습니다 (exp=2026-07-27T06:26:55Z)",
         )
 
-      val repository = mockk<ServerOAuth2AuthorizedClientRepository>()
-      every {
-        repository.loadAuthorizedClient<OAuth2AuthorizedClient>(any(), any(), any())
-      } returns Mono.just(client)
-
-      return TenantGateFilter(verifier, repository)
+      return TenantGateFilter(verifier, managerReturning(authorizedClient()))
     }
 
     /** 필터를 실행하고 다운스트림에 전달된 exchange 를 돌려준다. */
@@ -183,6 +202,64 @@ class TenantGateFilterTest :
         }
 
         then("거부된다 — 판단할 수 없으면 열어주지 않는다(fail-closed)") {
+          status shouldBe HttpStatus.FORBIDDEN
+        }
+      }
+    }
+
+    // ── 아래 둘은 실측에서 드러난 결함의 회귀 테스트다 (Phase 9g 검증 중 발견) ──────────
+    //
+    // access token 은 5분이면 만료되는데 게이트가 세션 저장소에서 **원본을 그대로** 읽고 있었다.
+    // 그 토큰을 검증하면 예외가 나고 그대로 500 이 나갔다. 같은 요청의 TokenRelay 는 만료를
+    // 갱신하며 잘 동작했기 때문에 "게이트를 거는 라우트만 500" 이라는 형태로 나타났다.
+    given("세션의 토큰을 더 이상 검증할 수 없을 때") {
+      val filter = filterWithUnverifiableToken()
+
+      `when`("테넌트를 지정해 요청하면") {
+        var thrown: Throwable? = null
+        try {
+          run(
+            filter,
+            MockServerHttpRequest
+              .get("/api/echo")
+              .header(TenantGateFilter.HEADER_REQUESTED_TENANT, "acme")
+              .build(),
+          )
+        } catch (e: Throwable) {
+          thrown = e
+        }
+
+        then("500 이 아니라 **인증 예외**가 된다 — 재로그인이 해법이기 때문") {
+          // AuthenticationException 이면 Phase 4 의 진입점이 받아
+          // 브라우저 이동엔 302, XHR 엔 401 + loginUrl 로 갈라준다.
+          (thrown is AuthenticationException) shouldBe true
+        }
+
+        then("서버 오류로 새어나가지 않는다") {
+          (thrown is ResponseStatusException) shouldBe false
+        }
+      }
+    }
+
+    given("세션에 authorized client 가 없을 때") {
+      val verifier = mockk<TokenVerifierPort>()
+      val filter = TenantGateFilter(verifier, managerReturning(null))
+
+      `when`("테넌트를 지정해 요청하면") {
+        var status: HttpStatus? = null
+        try {
+          run(
+            filter,
+            MockServerHttpRequest
+              .get("/api/echo")
+              .header(TenantGateFilter.HEADER_REQUESTED_TENANT, "acme")
+              .build(),
+          )
+        } catch (e: ResponseStatusException) {
+          status = HttpStatus.valueOf(e.statusCode.value())
+        }
+
+        then("소속을 알 수 없으므로 거부한다(fail-closed)") {
           status shouldBe HttpStatus.FORBIDDEN
         }
       }

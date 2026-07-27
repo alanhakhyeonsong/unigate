@@ -242,7 +242,72 @@ status=401
 프로브가 헤더를 못 읽는 게 아니라 GW 가 **선택적으로 제거**한 것이다. ⑤ 만 있었다면 같은
 `null` 을 보고 잘못된 확신을 얻었을 것이다.
 
-### 4.6 빌드
+### 4.6 5분 뒤에 다시 해보니 500 이었다 (P9g 검증 중 발견)
+
+위 측정을 마치고 20분쯤 뒤 같은 요청을 다시 보냈더니 **게이트를 거는 요청만 500** 이 됐다.
+
+```json
+{"case":"GW 경유 · 내 테넌트 자원","status":500,
+ "body":{"error":"Internal Server Error","path":"/api/orders/acme-1","requestId":"8391f1eb-29"}}
+```
+
+```
+# GW 로그
+TokenVerificationException: 토큰이 만료되었습니다 (exp=2026-07-27T06:26:55Z)
+	*__checkpoint ⇢ HTTP GET "/api/orders/acme-1" [ExceptionHandlingWebHandler]
+[post] GET /api/orders/acme-1 status=500 INTERNAL_SERVER_ERROR
+```
+
+같은 시각 **테넌트를 지정하지 않은 요청은 정상**이었다(다운스트림까지 도달해 400 을 받음).
+즉 TokenRelay 는 만료를 갱신하며 잘 동작하는데 **게이트만** 만료 토큰에 걸렸다.
+
+원인: 게이트가 `ServerOAuth2AuthorizedClientRepository` 로 세션의 토큰을 **원본 그대로** 읽었다.
+repository 는 저장된 값을 돌려줄 뿐 갱신하지 않는다. 갱신은
+`ReactiveOAuth2AuthorizedClientManager.authorize()` 가 `refreshToken()` provider 로 한다 —
+TokenRelay 가 쓰는 그 경로다(`TokenRelayConfig`).
+
+수정 후 (GW 재기동, **만료된 세션 그대로**):
+
+```json
+[{"case":"GW 경유 · 내 테넌트 자원","status":200,"body":{"id":"acme-1","tenantId":"acme","item":"노트북 거치대"}},
+ {"case":"GW 경유 · 남의 테넌트 자원","status":404,"body":{"reasonCode":"order_not_found"}},
+ {"case":"GW 경유 · 없는 자원","status":404,"body":{"reasonCode":"order_not_found"}},
+ {"case":"GW 경유 · 위조 X-Tenant-Id 만","status":400,"body":{"reasonCode":"tenant_required"}},
+ {"case":"GW 경유 · 비소속 테넌트 주장","status":403,"body":{"detail":"요청한 테넌트에 소속되어 있지 않습니다"}}]
+```
+
+갱신이 실제로 일어났음은 `expiresAt` 이 `06:26:55Z` → `06:38:08Z` 로 바뀐 것으로 확인했다.
+
+> **이 실패는 이 저장소가 이미 한 번 겪은 것이다** — `docs/learning/04` §6 이 TokenRelay 에 대해
+> 똑같이 기록해 뒀다("만료 69초 뒤에도 갱신 안 됨"). 세션에서 토큰을 직접 꺼내는 코드를 새로 쓸
+> 때마다 같은 함정이 되살아난다. **문서로 남긴 것과 다음 코드가 그것을 피하는 것은 별개다.**
+
+### 4.7 게이트를 우회하면 무엇이 남는가 (P9g)
+
+샘플 다운스트림에 fine 인가 예시(`/orders`)를 넣고, `:8081` 을 **직접** 때렸다.
+토큰은 브라우저 안에서 `window.name` 으로만 옮겨 로그·문서에 남기지 않았다.
+
+```json
+[{"case":"우회 · 위조 X-Tenant-Id(globex) 로 남의 자원","status":403,
+  "body":{"reasonCode":"tenant_header_not_backed_by_token"}},
+ {"case":"우회 · 진짜 소속(acme) 으로 내 자원","status":200,"body":{"id":"acme-1","tenantId":"acme"}},
+ {"case":"우회 · 진짜 소속으로 남의 자원","status":404,"body":{"reasonCode":"order_not_found"}},
+ {"case":"우회 · 헤더 없이","status":400,"body":{"reasonCode":"tenant_required"}},
+ {"case":"우회 · 토큰 없이 위조 헤더","status":401}]
+```
+
+그리고 **테넌트 검사를 하지 않는 엔드포인트**에 같은 공격을 했다.
+
+```json
+{"case":"우회 · /echo 에 위조 헤더","status":200,
+ "downstreamSaw":{"x-tenant-id":"globex"},"principal":"ea1271ad-…"}
+```
+
+관찰: **200 이고, 위조한 `globex` 가 그대로 도달했다.** 게이트웨이는 이 요청을 본 적조차 없다.
+막은 것은 게이트가 아니라 `/orders` 가 **스스로 한 검사**다. "게이트는 빨리 거절일 뿐 최종
+방어선이 아니다" 가 문장이 아니라 관찰이 됐다.
+
+### 4.8 빌드
 
 ```
 BUILD SUCCESSFUL in 13s
@@ -258,7 +323,9 @@ BUILD SUCCESSFUL in 13s
 | `GlobalFilter` 로 만든다 | actuator·fallback 요청까지 토큰 검증을 태운다 | 전역 필터는 라우트 매칭과 무관하게 전부 통과한다 | `GatewayFilter` 팩토리로 만들어 **라우트에 붙인다** |
 | 인가 실패에 401/302 를 준다 | 로그인 → 다시 403 → 다시 로그인. **무한 루프** | 401 은 "로그인하면 해결된다"는 뜻인데, 소속이 아닌 건 로그인해도 안 바뀐다 | 누구인지 아는데 권한이 없으면 **403** |
 | 게이트에서 IAM 에 멤버십을 조회 | 지연이 요청마다 늘고, IAM 장애가 전 라우트 장애가 된다 | coarse 경계를 넘었다 | 판단 근거를 **claim 으로 제한**. 최신성이 필요하면 그건 다운스트림의 fine 인가 |
-| 게이트를 최종 방어선으로 믿는다 | GW 를 우회해 `:8090`·`:8081` 을 직접 때리면 유효한 토큰만으로 통과 | 게이트는 "빨리 거절"이지 자원 보호가 아니다 | 다운스트림도 자기 인가를 갖는다. 검증은 P9g |
+| **세션에서 토큰을 직접 꺼내 쓴다** (실제로 겪음, §4.6) | 로그인 직후엔 정상. **5분 뒤부터 게이트를 거는 라우트만 500.** 같은 요청의 TokenRelay 는 멀쩡하다 | repository 는 저장된 토큰을 그대로 준다 — 갱신은 manager 의 `refreshToken()` provider 가 한다 | `ReactiveOAuth2AuthorizedClientManager.authorize()` 를 쓴다. `docs/learning/04` §6 과 **같은 함정** |
+| 검증 실패를 그대로 던진다 | 만료 토큰에 **500**. 온콜은 서버 장애로 읽는다 | 만료는 서버 오류가 아니라 재인증 사유다 | `AuthenticationException` 으로 변환 → Phase 4 진입점이 302/401 로 갈라준다 |
+| 게이트를 최종 방어선으로 믿는다 (실증됨, §4.7) | GW 를 우회하면 **위조 `X-Tenant-Id` 가 그대로 200 으로 통과** | 게이트는 "빨리 거절"이지 자원 보호가 아니다 | 다운스트림이 헤더를 토큰과 **다시 대조**한다(`/orders` 예시). 검사하는 엔드포인트만 살아남았다 |
 | 멤버십 해제 직후에도 통과 | 해제했는데 최대 5분 동안 옛 소속으로 접근된다 | claim 은 **발급 시점의 사실**이다. 토큰 만료 전엔 안 바뀐다 | 인지하고 문서화한다(P9d 의 한계와 같은 뿌리). 즉시 차단이 필요하면 별도 수단이 필요하다 |
 
 ## 6. 남은 의문
@@ -270,5 +337,10 @@ BUILD SUCCESSFUL in 13s
       기본 테넌트를 GW 가 골라주는 건 위험해 보이는데, 근거를 정리하지 못했다.
 - [ ] `X-Requested-Tenant` 는 IAM 라우트로 **통과된다**(§4.5 ⑥). IAM 이 이 값을 쓰지 않는다는 보장은
       지금은 코드 관례뿐이다. 강제할 수단(예: 그 라우트에서도 제거)이 필요한지 판단 못 했다.
-- [ ] GW 우회 직격(`:8081`, `:8090`)에 위조 `X-Tenant-Id` 를 실었을 때 무엇이 막는지 — 다운스트림의
-      fine 인가 예시와 함께 P9g 에서 확인할 것.
+- [x] ~~GW 우회 직격에 위조 `X-Tenant-Id` 를 실으면 무엇이 막는가~~ → §4.7 에서 확인.
+      **검사하는 엔드포인트만 막는다.** 검사하지 않으면 그대로 통과한다.
+- [ ] 그렇다면 **다운스트림마다 그 검사를 복제**해야 하는가. 지금은 컨트롤러 안에 손으로 넣었는데,
+      새 엔드포인트를 만들며 잊으면 그 자리만 조용히 뚫린다. 필터·어노테이션·라이브러리 중
+      무엇이 맞는지 아직 판단 못 했다(P9c 의 "접두사 전체를 막는다"가 힌트로 보인다).
+- [ ] 만료 토큰이 게이트에서 500 이 되던 문제(§4.6)는 **테스트가 못 잡았다.** verifier 를 모킹하면
+      만료가 재현되지 않기 때문이다. 이런 종류(세션·시간에 걸친 상태)를 자동화로 잡는 방법을 모르겠다.
