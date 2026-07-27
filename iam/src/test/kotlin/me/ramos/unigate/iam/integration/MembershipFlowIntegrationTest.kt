@@ -140,6 +140,7 @@ class MembershipFlowIntegrationTest {
     //
     // 그 대가가 이것 — 초대받고도 못 들어올 수 있다. 결함이 아니라 선택이다.
     activeTenant("acme", maxUsers = 1) // 생성자 1명으로 이미 정원
+    outboxRepository.deleteAll()
 
     // 초대 자체는 통과한다.
     membershipService.invite(InviteMemberCommand("acme", MEMBER_A, "member", ADMIN))
@@ -259,7 +260,12 @@ class MembershipFlowIntegrationTest {
     assertThat(event.tenantRef).isEqualTo("acme")
   }
 
-  /** 테넌트를 만들고 워커까지 돌려 ACTIVE 로 만든다(멤버를 받을 수 있는 상태). */
+  /**
+   * 테넌트를 만들고 워커를 **끝까지** 돌려 ACTIVE 로 만든다(멤버를 받을 수 있는 상태).
+   *
+   * 생성은 지시를 **둘** 만든다 — group 생성 + 생성자를 group 에 넣기. 하나만 처리하면
+   * 남은 지시가 뒤 단언을 오염시킨다.
+   */
   private fun activeTenant(
     id: String,
     maxUsers: Int,
@@ -267,7 +273,9 @@ class MembershipFlowIntegrationTest {
     createTenantService.create(
       CreateTenantCommand(tenantId = id, displayName = "테스트", creatorRef = ADMIN, maxUsers = maxUsers),
     )
-    outboxProcessor.processOne()
+    while (outboxProcessor.processOne()) {
+      // 남은 지시가 없을 때까지
+    }
   }
 
   private companion object {

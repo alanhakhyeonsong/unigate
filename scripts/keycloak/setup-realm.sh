@@ -41,6 +41,11 @@ readonly REALM_MANAGEMENT_CLIENT_ID="realm-management"
 # realm-admin 을 주면 client·realm 설정까지 바꿀 수 있어 과잉이다.
 readonly IAM_SERVICE_ACCOUNT_ROLES=("manage-users" "view-users" "query-users")
 
+# 테넌트 소속을 토큰에 싣는 매퍼 (Phase 9e). GW 의 coarse 게이트와 다운스트림이 이 claim 으로
+# "이 사용자가 어느 테넌트에 속하는가" 를 판단한다.
+readonly TENANT_GROUPS_MAPPER_NAME="tenant-groups"
+readonly TENANT_GROUPS_CLAIM="groups"
+
 readonly ROLE_USER="unigate-user"
 readonly ROLE_ADMIN="unigate-admin"
 readonly GROUP_USERS="unigate-users"
@@ -428,6 +433,52 @@ upsert_audience_mapper() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# Group Membership mapper (Phase 9e) — 테넌트 소속을 토큰 claim 으로
+# ---------------------------------------------------------------------------
+# audience mapper 와 결정적으로 다른 점: audience 는 **정적**(clientId 고정)이지만
+# 테넌트 소속은 **사용자마다 다르다.** 그래서 group membership mapper 를 쓴다 —
+# 사용자가 속한 group 경로를 그대로 claim 에 실어준다.
+#
+# `full.path: "true"` 가 핵심이다. false 면 group 이름만 실려 `acme` 가 되는데,
+# 그러면 테넌트 group 과 다른 용도의 group(`unigate-users`)을 **구분할 수 없다.**
+# true 면 `/tenants/acme` 로 실려 접두사로 걸러낼 수 있다.
+#
+# ⚠️ 이 매퍼도 **게이트웨이 로그인 client 에** 붙는다. 토큰을 발급받는 주체가 그쪽이다.
+upsert_group_membership_mapper() {
+  local mapper_name="$1" claim_name="$2"
+  local mapper_payload existing_mapper_id
+
+  mapper_payload=$(jq -n \
+    --arg name "$mapper_name" \
+    --arg claim "$claim_name" \
+    '{
+       name: $name,
+       protocol: "openid-connect",
+       protocolMapper: "oidc-group-membership-mapper",
+       config: {
+         "claim.name": $claim,
+         "full.path": "true",
+         "access.token.claim": "true",
+         "id.token.claim": "false",
+         "userinfo.token.claim": "false",
+         "introspection.token.claim": "true"
+       }
+     }')
+
+  existing_mapper_id=$(api GET "/admin/realms/$REALM/clients/$GATEWAY_UUID/protocol-mappers/models" \
+    | jq -r --arg n "$mapper_name" 'map(select(.name == $n)) | .[0].id // empty')
+
+  if [[ -n "$existing_mapper_id" ]]; then
+    api PUT "/admin/realms/$REALM/clients/$GATEWAY_UUID/protocol-mappers/models/$existing_mapper_id" \
+      "$(printf '%s' "$mapper_payload" | jq --arg id "$existing_mapper_id" '. + {id: $id}')" >/dev/null
+    ok "group membership mapper '$mapper_name' 갱신 (claim: $claim_name, full path)"
+  else
+    api POST "/admin/realms/$REALM/clients/$GATEWAY_UUID/protocol-mappers/models" "$mapper_payload" >/dev/null
+    ok "group membership mapper '$mapper_name' 생성 (claim: $claim_name, full path)"
+  fi
+}
+
 if step "audience mapper '$AUDIENCE_MAPPER_NAME' upsert (aud += $DOWNSTREAM_CLIENT_ID)"; then
   upsert_audience_mapper "$AUDIENCE_MAPPER_NAME" "$DOWNSTREAM_CLIENT_ID"
 fi
@@ -436,6 +487,12 @@ fi
 # 응답만 봐서는 원인이 보이지 않는다(토큰을 디코드해 aud 를 눈으로 봐야 안다).
 if step "audience mapper '$IAM_AUDIENCE_MAPPER_NAME' upsert (aud += $IAM_CLIENT_ID)"; then
   upsert_audience_mapper "$IAM_AUDIENCE_MAPPER_NAME" "$IAM_CLIENT_ID"
+fi
+
+# Phase 9e — 테넌트 소속을 토큰에 싣는다. 이게 없으면 GW 의 coarse 게이트(P9f)가 판단할
+# 근거가 없어 **모든 테넌트 요청이 거부**되거나, 반대로 게이트를 못 걸게 된다.
+if step "group membership mapper '$TENANT_GROUPS_MAPPER_NAME' upsert (claim: $TENANT_GROUPS_CLAIM)"; then
+  upsert_group_membership_mapper "$TENANT_GROUPS_MAPPER_NAME" "$TENANT_GROUPS_CLAIM"
 fi
 
 # ---------------------------------------------------------------------------

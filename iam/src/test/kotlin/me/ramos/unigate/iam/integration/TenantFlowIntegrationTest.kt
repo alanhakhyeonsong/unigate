@@ -100,9 +100,14 @@ class TenantFlowIntegrationTest {
     assertThat(membership.status).isEqualTo(MembershipStatus.ACTIVE)
     assertThat(membership.joinedAt).isNotNull()
 
-    val outbox = outboxRepository.findAll().single()
-    assertThat(outbox.eventType).isEqualTo(OutboxEventType.CREATE_KEYCLOAK_GROUP)
-    assertThat(outbox.status).isEqualTo(OutboxStatus.PENDING)
+    // 지시가 **둘**이다: group 생성 + 생성자를 그 group 에 넣기.
+    // 후자가 없으면 테넌트를 만든 사람이 정작 그 테넌트에 접근하지 못한다(P9e 에서 발견).
+    val instructions = outboxRepository.findAll()
+    assertThat(instructions.map { it.eventType }).containsExactlyInAnyOrder(
+      OutboxEventType.CREATE_KEYCLOAK_GROUP,
+      OutboxEventType.ADD_GROUP_MEMBER,
+    )
+    assertThat(instructions).allMatch { it.status == OutboxStatus.PENDING }
 
     val events = auditLogRepository.findAll().map { it.eventType }
     assertThat(events).containsExactlyInAnyOrder(
@@ -114,15 +119,21 @@ class TenantFlowIntegrationTest {
   }
 
   @Test
-  fun `워커가 group 을 만들면 테넌트가 ACTIVE 가 된다`() {
+  fun `워커가 group 을 만들면 테넌트가 ACTIVE 가 되고 생성자도 group 에 들어간다`() {
     every { identityProviderPort.createTenantGroup("acme") } returns Unit
+    every { identityProviderPort.addUserToTenantGroup(any(), any()) } returns Unit
     createTenantService.create(command("acme"))
 
+    // 지시가 둘이므로 두 번 돌린다.
+    assertThat(outboxProcessor.processOne()).isTrue()
     assertThat(outboxProcessor.processOne()).isTrue()
 
     verify { identityProviderPort.createTenantGroup("acme") }
+    // 생성자가 group 에 들어가야 토큰의 groups claim 에 이 테넌트가 실린다(P9e).
+    verify { identityProviderPort.addUserToTenantGroup("acme", CREATOR) }
+
     assertThat(tenantRepositoryPort.findById(TenantId("acme"))?.status).isEqualTo(TenantStatus.ACTIVE)
-    assertThat(outboxRepository.findAll().single().status).isEqualTo(OutboxStatus.COMPLETED)
+    assertThat(outboxRepository.findAll()).allMatch { it.status == OutboxStatus.COMPLETED }
     assertThat(auditLogRepository.findAll().map { it.eventType })
       .contains(AuditEventType.TENANT_ACTIVATED)
   }
@@ -132,13 +143,15 @@ class TenantFlowIntegrationTest {
     // 프로비저닝이 안 끝났는데 ACTIVE 로 만들면 **group 없는 테넌트에 멤버를 넣게 된다.**
     every { identityProviderPort.createTenantGroup(any()) } throws
       IdentityProviderUnavailableException("keycloak down")
+    every { identityProviderPort.addUserToTenantGroup(any(), any()) } throws
+      IdentityProviderUnavailableException("group 이 아직 없다")
     createTenantService.create(command("acme"))
 
     outboxProcessor.processOne()
 
     assertThat(tenantRepositoryPort.findById(TenantId("acme"))?.status).isEqualTo(TenantStatus.PENDING)
     // 재시도 대상으로 남는다 — 외부 장애로 테넌트를 잃지 않는다.
-    assertThat(outboxRepository.findAll().single().status).isEqualTo(OutboxStatus.PENDING)
+    assertThat(outboxRepository.findAll()).allMatch { it.status == OutboxStatus.PENDING }
   }
 
   @Test
@@ -146,16 +159,18 @@ class TenantFlowIntegrationTest {
     // outbox 는 최소 1회 실행이다. ACTIVE→ACTIVE 전이를 시도하면 상태기계가 거부해
     // **성공한 작업이 실패로 기록**된다(markProfileIdentityFailed 에서 겪은 것과 같은 함정).
     every { identityProviderPort.createTenantGroup("acme") } returns Unit
+    every { identityProviderPort.addUserToTenantGroup(any(), any()) } returns Unit
     createTenantService.create(command("acme"))
     outboxProcessor.processOne()
+    outboxProcessor.processOne()
 
-    // 운영자가 재처리한 상황을 흉내 낸다.
-    val record = outboxRepository.findAll().single()
+    // 운영자가 group 생성 지시를 재처리한 상황을 흉내 낸다.
+    val record = outboxRepository.findAll().single { it.eventType == OutboxEventType.CREATE_KEYCLOAK_GROUP }
     record.status = OutboxStatus.PENDING
     outboxRepository.save(record)
 
     assertThat(outboxProcessor.processOne()).isTrue()
-    assertThat(outboxRepository.findAll().single().status).isEqualTo(OutboxStatus.COMPLETED)
+    assertThat(outboxRepository.findAll()).allMatch { it.status == OutboxStatus.COMPLETED }
     assertThat(tenantRepositoryPort.findById(TenantId("acme"))?.status).isEqualTo(TenantStatus.ACTIVE)
   }
 

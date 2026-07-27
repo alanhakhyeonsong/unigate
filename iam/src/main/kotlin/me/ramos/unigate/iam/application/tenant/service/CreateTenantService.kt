@@ -5,6 +5,7 @@ import me.ramos.unigate.iam.application.outbox.model.OutboxEventType
 import me.ramos.unigate.iam.application.outbox.model.OutboxRecord
 import me.ramos.unigate.iam.application.outbox.port.outbound.OutboxPort
 import me.ramos.unigate.iam.application.tenant.dto.CreateTenantGroupPayload
+import me.ramos.unigate.iam.application.tenant.dto.GroupMembershipPayload
 import me.ramos.unigate.iam.application.tenant.port.outbound.TenantRepositoryPort
 import me.ramos.unigate.iam.application.user.port.outbound.PayloadSerializerPort
 import me.ramos.unigate.iam.domain.audit.enums.AuditEventType
@@ -101,6 +102,26 @@ class CreateTenantService(
       OutboxRecord.pending(
         eventType = OutboxEventType.CREATE_KEYCLOAK_GROUP,
         payload = payloadSerializer.serialize(CreateTenantGroupPayload(tenantId = command.tenantId)),
+        now = now,
+      ),
+    )
+
+    // ⚠️ 생성자를 group 에 넣는 지시도 **함께** 남긴다 (Phase 9e 에서 발견한 누락).
+    //
+    // 생성자는 `joinDirectly` 로 수락 절차 없이 곧바로 ACTIVE 멤버가 된다. 그런데 group 투영은
+    // P9d 에서 **수락 시점**에만 발행하도록 만들었으므로, 생성자만 "IAM 에서는 멤버인데
+    // Keycloak group 에는 없는" 상태가 된다. 그러면 토큰의 `groups` claim 에 이 테넌트가 실리지
+    // 않아 **테넌트를 만든 사람이 정작 그 테넌트에 접근하지 못한다.**
+    //
+    // 순서는 보장하지 않아도 된다. group 생성보다 이 지시가 먼저 처리되면 어댑터가
+    // `requireTenantGroupId` 에서 재시도 대상 예외를 던지고, 다음 폴링에 자연히 풀린다.
+    outboxPort.enqueue(
+      OutboxRecord.pending(
+        eventType = OutboxEventType.ADD_GROUP_MEMBER,
+        payload =
+          payloadSerializer.serialize(
+            GroupMembershipPayload(tenantId = command.tenantId, userRef = command.creatorRef),
+          ),
         now = now,
       ),
     )
