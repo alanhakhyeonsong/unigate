@@ -1,7 +1,9 @@
 package me.ramos.unigate.iam.adapter.jpaOut.repository
 
 import me.ramos.unigate.iam.adapter.jpaOut.entity.OutboxRecordEntity
+import me.ramos.unigate.iam.application.outbox.model.OutboxStatus
 import org.springframework.data.jpa.repository.JpaRepository
+import org.springframework.data.jpa.repository.Modifying
 import org.springframework.data.jpa.repository.Query
 import org.springframework.data.repository.query.Param
 import java.time.Instant
@@ -41,4 +43,29 @@ interface OutboxRecordJpaRepository : JpaRepository<OutboxRecordEntity, Long> {
   fun claimNext(
     @Param("now") now: Instant,
   ): OutboxRecordEntity?
+
+  /** 상태별 건수 — 메트릭 전용(Phase 9b). `idx_outbox_status` 를 탄다. */
+  fun countByStatus(status: OutboxStatus): Long
+
+  /**
+   * 오래된 `COMPLETED` 레코드를 **벌크로** 지운다.
+   *
+   * ## `@Modifying(clearAutomatically = true)` 인 이유
+   * 벌크 연산은 영속성 컨텍스트를 **거치지 않고** DB 에 직접 나간다. 1차 캐시에 남아 있는
+   * 같은 엔티티는 이미 지워진 행을 가리키게 되므로, 실행 후 컨텍스트를 비워 유령 객체를 없앤다.
+   *
+   * ⚠️ `status = 'COMPLETED'` 조건을 빼면 **DEAD 까지 지운다.** 사람이 봐야 할 것을 조용히
+   * 없애는 셈이라 이 조건이 이 쿼리의 안전장치다.
+   */
+  @Modifying(clearAutomatically = true)
+  @Query(
+    value = """
+            DELETE FROM outbox_record
+            WHERE status = 'COMPLETED' AND updated_at < :threshold
+        """,
+    nativeQuery = true,
+  )
+  fun deleteCompletedBefore(
+    @Param("threshold") threshold: Instant,
+  ): Int
 }

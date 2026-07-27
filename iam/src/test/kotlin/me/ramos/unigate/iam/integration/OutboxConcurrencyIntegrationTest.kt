@@ -1,17 +1,20 @@
 package me.ramos.unigate.iam.integration
 
+import io.micrometer.core.instrument.MeterRegistry
 import me.ramos.unigate.iam.adapter.jpaOut.repository.OutboxRecordJpaRepository
 import me.ramos.unigate.iam.adapter.jpaOut.repository.UserProfileJpaRepository
 import me.ramos.unigate.iam.application.outbox.model.OutboxEventType
 import me.ramos.unigate.iam.application.outbox.model.OutboxRecord
 import me.ramos.unigate.iam.application.outbox.model.OutboxStatus
 import me.ramos.unigate.iam.application.outbox.port.outbound.OutboxPort
+import me.ramos.unigate.iam.application.outbox.service.OutboxRetentionService
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
+import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.test.context.TestPropertySource
 import org.springframework.transaction.support.TransactionTemplate
 import java.time.Instant
@@ -76,6 +79,15 @@ class OutboxConcurrencyIntegrationTest {
 
   @Autowired
   private lateinit var transactionTemplate: TransactionTemplate
+
+  @Autowired
+  private lateinit var retentionService: OutboxRetentionService
+
+  @Autowired
+  private lateinit var jdbcTemplate: JdbcTemplate
+
+  @Autowired
+  private lateinit var meterRegistry: MeterRegistry
 
   @BeforeEach
   fun cleanUp() {
@@ -188,6 +200,95 @@ class OutboxConcurrencyIntegrationTest {
     transactionTemplate.execute {
       assertThat(outboxPort.claimNext(afterBackoff)).isNotNull()
     }
+  }
+
+  // ── Phase 9b: DLQ 메타데이터 · 보존 정책 ──────────────────────────────
+
+  @Test
+  fun `DEAD 가 되면 죽은 시각과 예외 클래스가 DB 에 남는다`() {
+    // 단위 테스트는 모델만 본다. 컬럼(V4)·엔티티·어댑터 매핑이 실제로 이어져 있는지는
+    // 왕복시켜야 확인된다 — 매핑 한 줄이 빠져도 모델 테스트는 통과한다.
+    val record = enqueue("dead-meta@example.local")
+    val now = Instant.now()
+
+    transactionTemplate.execute {
+      outboxPort.update(record.failedPermanently(now, "identity_already_exists", "me.ramos.Boom"))
+    }
+
+    val saved = outboxRepository.findAll().single()
+    assertThat(saved.status).isEqualTo(OutboxStatus.DEAD)
+    assertThat(saved.deadAt).isNotNull()
+    assertThat(saved.lastExceptionClass).isEqualTo("me.ramos.Boom")
+    // 메시지가 아니라 사유 **코드**만 남는다(외부 응답 본문 유입 방지).
+    assertThat(saved.lastError).isEqualTo("identity_already_exists")
+  }
+
+  @Test
+  fun `보존 기간이 지난 COMPLETED 는 정리된다`() {
+    enqueue("purge-me@example.local")
+    transactionTemplate.execute {
+      outboxPort.claimNext(Instant.now())?.let { outboxPort.update(it.completed()) }
+    }
+    // 정리 기준은 updated_at 이다. 시계를 돌릴 수 없으므로 행을 과거로 민다.
+    jdbcTemplate.update("UPDATE outbox_record SET updated_at = now() - interval '30 days'")
+
+    val deleted = retentionService.purgeCompleted()
+
+    assertThat(deleted).isEqualTo(1)
+    assertThat(outboxRepository.findAll()).isEmpty()
+  }
+
+  @Test
+  fun `DEAD 는 아무리 오래돼도 정리되지 않는다`() {
+    // ⚠️ 이게 정리 쿼리의 안전장치다. DEAD 는 **사람이 봐야 할 것**이 남아 있다는 뜻이고,
+    // 그것이 조용히 사라지면 outbox 의 "잃어버리지 않는다" 는 약속이 깨진다.
+    val record = enqueue("keep-dead@example.local")
+    transactionTemplate.execute {
+      outboxPort.update(record.failedPermanently(Instant.now(), "identity_already_exists"))
+    }
+    jdbcTemplate.update("UPDATE outbox_record SET updated_at = now() - interval '365 days'")
+
+    val deleted = retentionService.purgeCompleted()
+
+    assertThat(deleted).isZero()
+    assertThat(outboxRepository.findAll()).hasSize(1)
+  }
+
+  @Test
+  fun `상태별 건수를 세어 메트릭에 낼 수 있다`() {
+    // DEAD 가 쌓이는 것을 아무도 모르던 상태를 없애는 값이다(IamConfig 의 게이지가 이 포트를 쓴다).
+    enqueue("count-pending@example.local")
+    val toKill = enqueue("count-dead@example.local")
+    transactionTemplate.execute {
+      outboxPort.update(toKill.failedPermanently(Instant.now(), "identity_already_exists"))
+    }
+
+    assertThat(outboxPort.countByStatus(OutboxStatus.PENDING)).isEqualTo(1)
+    assertThat(outboxPort.countByStatus(OutboxStatus.DEAD)).isEqualTo(1)
+    assertThat(outboxPort.countByStatus(OutboxStatus.COMPLETED)).isZero()
+  }
+
+  @Test
+  fun `게이지가 registry 에 실제로 등록되고 DB 값을 읽는다`() {
+    // ⚠️ 이 테스트가 필요한 이유는 검증 경로가 막혀 있기 때문이다.
+    // `/actuator/prometheus` 는 **인증이 필요해**(IamSecurityConfig 가 health·info 만 연다)
+    // 토큰 없이 긁으면 401 이 돌아온다. 그 응답에 메트릭 이름이 없다고 "등록 안 됨" 으로
+    // 오진하기 쉽다 — 실제로 그렇게 한 번 잘못 판단했다.
+    //
+    // registry 를 직접 보면 그 착시 없이 등록 여부와 값을 함께 확인할 수 있다.
+    val toKill = enqueue("gauge-dead@example.local")
+    transactionTemplate.execute {
+      outboxPort.update(toKill.failedPermanently(Instant.now(), "identity_already_exists"))
+    }
+
+    val gauge =
+      meterRegistry
+        .find("unigate.iam.outbox.records")
+        .tag("status", OutboxStatus.DEAD.name)
+        .gauge()
+
+    assertThat(gauge).isNotNull()
+    assertThat(gauge!!.value()).isEqualTo(1.0)
   }
 
   private fun enqueue(email: String): OutboxRecord =

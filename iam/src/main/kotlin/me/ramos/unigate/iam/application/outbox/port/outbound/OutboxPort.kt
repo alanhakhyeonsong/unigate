@@ -1,6 +1,7 @@
 package me.ramos.unigate.iam.application.outbox.port.outbound
 
 import me.ramos.unigate.iam.application.outbox.model.OutboxRecord
+import me.ramos.unigate.iam.application.outbox.model.OutboxStatus
 import java.time.Instant
 
 /**
@@ -29,4 +30,25 @@ interface OutboxPort {
 
   /** 처리 결과를 반영한다(COMPLETED / PENDING 재시도 / DEAD). */
   fun update(record: OutboxRecord): OutboxRecord
+
+  /**
+   * 상태별 레코드 수. **메트릭 전용**이다(Phase 9b).
+   *
+   * DEAD 가 쌓이는 것을 아무도 모르는 상태를 없애기 위해 둔다. 업무 로직이 이 값으로 분기하지
+   * 않는다 — 그러면 다중 인스턴스에서 경합이 생기고, 애초에 outbox 는 건별로 판단하는 구조다.
+   */
+  fun countByStatus(status: OutboxStatus): Long
+
+  /**
+   * 지정 시각 **이전에 완료된** 레코드를 지운다. 지운 건수를 돌려준다.
+   *
+   * ## 감사 보존 정책과 성격이 다르다
+   * `audit_log` 는 "무슨 일이 있었나" 의 기록이라 보존이 목적이지만, `COMPLETED` outbox 레코드는
+   * **이미 끝난 작업 지시서**다. 신원 생성 이력은 `audit_log` 의 `IDENTITY_CREATED` 가 이미 갖고
+   * 있으므로, 여기서 지워도 잃는 정보가 없다.
+   *
+   * ⚠️ `DEAD` 는 지우지 않는다. 사람이 봐야 할 것이 남아 있다는 뜻이고, 그것이 조용히 사라지면
+   * 이 패턴의 "잃어버리지 않는다" 라는 약속이 깨진다.
+   */
+  fun deleteCompletedBefore(threshold: Instant): Int
 }

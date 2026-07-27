@@ -75,6 +75,22 @@ unigate:
     security:
       expected-audience: ${IAM_EXPECTED_AUDIENCE:unigate-iam}
 
+    # ── outbox 워커 (Phase 8d · 9b) ─────────────────────────────────────────
+    # 값 자체는 코드 기본값과 같지만 **명시해 둔다.** 설정 파일에 없는 값은 존재를 모르게 되고,
+    # 장애 때 "폴링 주기를 어떻게 바꾸지" 를 코드에서 찾게 된다.
+    outbox:
+      polling:
+        # 워커를 띄우지 않는 인스턴스(API 전용 노드)를 구성할 여지. 통합 테스트도 이걸로 끈다.
+        enabled: ${IAM_OUTBOX_POLLING_ENABLED:true}
+        # 기동 직후는 커넥션 풀·Flyway 가 안정되기 전이라 조금 기다린다.
+        # 이후 주기는 **적응형**이라 설정값이 아니다(500ms~10s, OutboxPollingScheduler 참조).
+        initial-delay-ms: ${IAM_OUTBOX_POLLING_INITIAL_DELAY_MS:10000}
+      retention:
+        # COMPLETED 레코드 정리. DEAD 는 지우지 않는다(사람이 봐야 할 것이므로).
+        enabled: ${IAM_OUTBOX_RETENTION_ENABLED:true}
+        # 벌크 DELETE 라 부하가 있다 → 시각을 고정한다. fixedDelay 는 기동 시점에 따라 옮겨 다닌다.
+        cron: ${IAM_OUTBOX_RETENTION_CRON:0 30 4 * * *}
+
     # ── 약관 정책 (Phase 8e) ────────────────────────────────────────────────
     # 이 값을 올리면 **기존 동의가 일제히 무효**가 되고 사용자에게 재동의를 받아야 한다
     # (ConsentRecord 는 버전과 시각을 함께 보관한다). 인프라 설정이 아니라 비즈니스 결정이므로
