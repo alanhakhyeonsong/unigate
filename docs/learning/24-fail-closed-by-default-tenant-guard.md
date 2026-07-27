@@ -152,6 +152,67 @@ NullPointerException: Parameter specified as non-null is null:
 `TenantContext` 를 `@JvmInline value class` 로 만든 것이 원인이었다. 자세한 것은 §5.
 `data class` 로 바꾸자 위 4.3 결과가 나왔다.
 
+### 4.5 쓰기 경로는 default-deny 가 지켜주지 않는다
+
+읽기에서 "검사를 잊어도 막힌다"를 봤으니 쓰기도 그럴 것 같지만, **아니다.** 확인하려고
+본문의 `tenantId` 를 그대로 쓰는 엔드포인트(`/legacy/orders`)를 만들었다. carol(`acme` 소속)이
+**GW 를 정상 경유**해서 호출했다.
+
+```json
+[{"case":"생성 · 정상","status":201,"body":{"id":"acme-100","tenantId":"acme","item":"모니터암"}},
+ {"case":"생성 · 본문에 tenantId 위조 시도","status":201,"body":{"id":"acme-101","tenantId":"acme","item":"침투시도"}},
+ {"case":"수정 · 남의 테넌트 자원","status":404,"body":{"reasonCode":"order_not_found"}},
+ {"case":"수정 · 내 자원","status":200,"body":{"id":"acme-1","item":"노트북 거치대 v2"}},
+ {"case":"⚠️ legacy · 본문의 tenantId 를 그대로 쓰는 엔드포인트","status":201,
+  "body":{"id":"globex-102","tenantId":"globex","item":"침투"}}]
+```
+
+관찰:
+- **마지막 줄이 뚫린 것이다.** `acme` 에만 속한 사용자가 `globex` 소유의 자원을 만들었다.
+  인가 규칙은 **정직하게 통과**했다 — 헤더는 진짜 소속이었으니까. 인가는 "어느 테넌트로
+  행동하는가"만 고정하고 **본문이 말하는 테넌트는 보지 않는다.**
+- 두 번째 줄이 안전한 이유는 검사 때문이 아니라 **DTO 에 `tenantId` 필드가 없어서**다.
+  값이 담길 자리가 없으니 무시된다.
+
+그리고 만들어진 `globex-102` 는 carol 의 목록에 **보이지 않는다.**
+
+```json
+{"acme목록":["acme-1:acme","acme-2:acme","acme-100:acme","acme-101:acme"],"globex침투건이보이는가":false}
+```
+
+만든 사람조차 다시 못 보는 오염이다 — 남의 테넌트에 조용히 쌓인다.
+
+### 4.6 예외 목록을 테스트로 고정하기 (IAM, 커밋 대상)
+
+샘플은 커밋되지 않으므로, 같은 성격의 가드를 **IAM 모듈**에 넣었다
+(`IamAuthorizationCoverageTest`). 정책 상수(`PUBLIC_PATHS`·`ADMIN_PATHS`)와 클래스패스에서
+스캔한 실제 엔드포인트를 대조한다.
+
+```
+Given: IAM 의 모든 REST 엔드포인트 > When: 클래스패스에서 수집하면 > Then: 하나 이상 발견된다 PASSED
+… > When: 공개(permitAll) 패턴과 대조하면 > Then: 의도한 것만 공개다 PASSED
+… > When: 관리(admin) 경로와 대조하면 > Then: 관리 컨트롤러의 경로는 전부 관리 접두사 아래에 있다 PASSED
+… > When: 공개 목록의 각 패턴을 거꾸로 보면 > Then: 대응하는 엔드포인트가 없는 공개 패턴은 없다 PASSED
+```
+
+**통과만 하는 가드는 무의미하므로**([15](15-archunit-dependency-guard.md) §4) 일부러 어겨봤다 —
+`PUBLIC_PATHS` 에 `/iam/admin` 하위를 넣었다.
+
+```
+Then: 의도한 것만 공개다 — 새 엔드포인트가 공개 패턴에 걸리면 여기서 깨진다 FAILED
+  Collection should contain ["/iam/register", "/debug/thread"] in any order, but was
+  ["/iam/admin/outbox/dead", "/iam/admin/outbox/dead/{id}/requeue", "/iam/register",
+   "/iam/admin/tenants/{tenantId}/members", "/iam/admin/tenants/{tenantId}/members/{userRef}",
+   "/iam/admin/tenants", "/debug/thread"]
+```
+
+관리 API 6개가 공개로 분류됐다는 것을 **경로 이름까지 찍어** 알려준다.
+
+**여기서도 한 번 틀렸다.** 처음엔 `/debug/thread` 가 목록에 안 잡혀 실패했다. 원인은
+클래스패스 스캐너가 `@Conditional` 을 **평가**한다는 것 — `@Profile("local")` 컨트롤러는
+프로파일이 꺼져 있으면 후보에서 빠진다. 프로파일을 켜서 스캔하도록 고쳤다.
+**대상을 조용히 놓치는 커버리지 테스트는 커버리지가 없는 것보다 나쁘다** — 있다고 믿게 만든다.
+
 ## 5. 함정 / 실패 모드
 
 | 함정 | 증상 | 원인 | 해결 |
@@ -162,16 +223,23 @@ NullPointerException: Parameter specified as non-null is null:
 | 예외 목록이 늘어나는 것을 방치 | 시간이 지나면 "기본값이 안전"이 사실상 무의미해진다 | 예외 추가는 한 줄이라 리뷰에서 가볍게 지나간다 | 예외 줄마다 **왜 테넌트와 무관한지** 주석을 강제한다. 늘어나면 그 자체가 신호다 |
 | **`TenantContext` 를 `@JvmInline value class` 로** (실제로 겪음, §4.4) | 그 파라미터를 받는 엔드포인트만 **500**. `constructor-impl, parameter tenantId` NPE | value class 는 컴파일되며 **파라미터 타입이 `String` 으로 펴진다.** resolver 의 `parameterType == TenantContext::class.java` 가 영원히 거짓이 되고 Spring 이 `null` 을 바인딩한다 | 주입되는 자리에는 평범한 `data class`. `docs/learning/20` §5 함정 1 과 **같은 함정** |
 | 소속이 하나뿐인 사용자에게 헤더를 자동 채워주기 | 편해 보이지만, 그 규칙이 **다중 소속 사용자에게 잘못 적용**된다 | "하나뿐이니 자명하다"는 가정이 사용자마다 다르다 | 헤더가 없으면 거부한다. 무엇으로 행동하는지는 **호출자가 밝힌다** |
+| **읽기에서 통했으니 쓰기도 안전할 것이라 믿기** (실증, §4.5) | 인가는 통과하는데 **남의 테넌트에 자원이 생긴다.** 만든 사람도 못 본다 | 인가는 "어느 테넌트로 행동하는가"만 보고 **본문을 보지 않는다** | 요청 DTO 에 `tenantId` 를 두지 않는다. 저장소의 생성 API 도 테넌트를 파라미터로 받지 않는다 |
+| **`@Profile` 컨트롤러가 커버리지 스캔에서 누락** (실제로 겪음, §4.6) | 커버리지 테스트가 **통과**한다. 그 엔드포인트는 검사 대상에서 사라진 채 | `ClassPathScanningCandidateComponentProvider` 가 `@Conditional` 을 평가한다 | 스캐너 environment 에 프로파일을 명시적으로 켠다. 놓친 커버리지는 없는 것보다 나쁘다 |
 | — (함정이 아니라 **치른 대가**) | "테넌트 미지정"이 400 → **403** 이 됐다. 클라이언트는 "권한 없음"과 "요청이 불완전함"을 구분 못 한다 | 인가 계층은 allow/deny 만 말할 수 있다. 컨트롤러에서 올렸으니 표현력이 줄어든 것 | 감수한다. 잊어도 닫히는 것과 응답이 친절한 것 중 전자를 골랐다. 필요하면 `AccessDeniedHandler` 에서 사유를 갈라 붙일 수 있다 |
 
 ## 6. 남은 의문
 
-- [ ] **예외 목록을 테스트로 고정할 수 있을까.** 지금은 `SecurityConfig` 를 읽어야만 어디가
-      격리 밖인지 안다. "예외는 `/public/**` 와 `/echo` 뿐"을 단언하는 테스트가 있으면 예외가
-      늘어날 때 리뷰가 강제될 텐데, 인가 규칙을 열거하는 방법을 아직 모른다.
+- [x] ~~**예외 목록을 테스트로 고정할 수 있을까.**~~ → §4.6. 인가 규칙 자체를 열거하는 대신
+      **정책 상수와 실제 엔드포인트를 대조**했다. 다만 이건 "정책이 의도와 다른 것"만 잡고,
+      "정책이 동작하지 않는 것"은 못 잡는다 — 둘은 다른 테스트가 필요하다.
+- [ ] **샘플 다운스트림에는 같은 가드가 없다.** 테스트 의존성이 없어 IAM 에만 넣었다. 그런데
+      정작 default-deny 를 쓰는 쪽은 샘플이다. 스타터를 만들 때 이 테스트도 함께 제공해야 하나?
 - [ ] **스타터로 뽑는 시점의 판단 기준.** 다운스트림 2대째가 오면 만들기로 했는데(§8.4),
       두 서비스의 요구가 갈리는 지점을 미리 알 수는 없다. 무엇이 갈리면 "아직 이르다"인가?
 - [ ] Repository 강제는 **인메모리 샘플**이라 성립이 쉬웠다. 실제 JPA 에서 base repository /
       Hibernate `@Filter` / RLS 중 무엇이 "잊으면 0건"을 가장 확실히 보장하는지는 안 해봤다.
-- [ ] 이 구조는 **읽기**만 확인했다. 쓰기(생성·수정)에서 테넌트를 잘못 넣는 경로 —
-      예: 본문에 `tenantId` 를 실어 보내는 경우 — 는 아직 막아본 적이 없다.
+- [x] ~~이 구조는 **읽기**만 확인했다.~~ → §4.5 에서 쓰기까지 봤고, **default-deny 가 쓰기를
+      지켜주지 못한다**는 것이 드러났다. 규약(DTO 에 `tenantId` 금지)으로 막았다.
+- [ ] 그 규약은 **관례일 뿐 강제가 아니다.** "요청 DTO 에 `tenantId` 필드가 없다"를 테스트로
+      고정할 수 있을까 — ArchUnit 으로 패키지 내 DTO 필드명을 검사하는 방식이 떠오르는데,
+      정당한 예외(관리 API 는 대상 테넌트를 받아야 한다)를 어떻게 구분할지 모르겠다.
