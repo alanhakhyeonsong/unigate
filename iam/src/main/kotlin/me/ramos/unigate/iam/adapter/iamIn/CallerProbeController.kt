@@ -1,5 +1,6 @@
 package me.ramos.unigate.iam.adapter.iamIn
 
+import jakarta.servlet.http.HttpServletRequest
 import org.springframework.context.annotation.Profile
 import org.springframework.security.oauth2.jwt.Jwt
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken
@@ -34,7 +35,10 @@ import org.springframework.web.bind.annotation.RestController
 @Profile("local")
 class CallerProbeController {
   @GetMapping("/whoami")
-  fun whoAmI(authentication: JwtAuthenticationToken): Map<String, Any?> {
+  fun whoAmI(
+    authentication: JwtAuthenticationToken,
+    request: HttpServletRequest,
+  ): Map<String, Any?> {
     val jwt: Jwt = authentication.token
     return mapOf(
       // GW 가 relay 한 토큰의 주체. IAM 도메인의 UserRef 와 이어지는 값이다.
@@ -59,6 +63,21 @@ class CallerProbeController {
           ?.filter { it.startsWith("/tenants/") }
           ?.map { it.removePrefix("/tenants/") },
       "expiresAt" to jwt.expiresAt?.toString(),
+      // Phase 9f: **IAM 에 도달한** 테넌트 헤더. 여기서의 기대값은 언제나 `null` 이다.
+      //
+      // IAM 라우트에는 테넌트 게이트를 걸지 않는다(관리 평면은 대상 테넌트를 경로·본문으로 받는다).
+      // 게이트를 안 거치는 경로일수록 인입 헤더가 그대로 흘러갈 위험이 크므로, GW 가 이 라우트에서
+      // `X-Tenant-Id` 를 제거한다. 그 제거를 **눈으로 확인할 수단**이 없으면 라우트 설정이 빠져도
+      // 아무 증상 없이 통과한다 — 위조 헤더는 조용히 성공하기 때문이다.
+      //
+      // 값이 찍히면 GW 라우트 설정에서 removeRequestHeader 가 빠진 것이다.
+      "receivedTenantHeader" to request.getHeader("X-Tenant-Id"),
+      // **대조군.** 위 필드가 `null` 인 것만으로는 "제거됐다" 와 "프로브가 애초에 헤더를 못 읽는다"
+      // 가 구분되지 않는다. `X-Requested-Tenant` 는 제거 대상이 아니므로(클라이언트의 *주장*일 뿐
+      // 신뢰 대상이 아니라 굳이 지울 이유가 없다) 여기엔 보낸 값이 그대로 찍혀야 한다.
+      //
+      // 두 필드를 나란히 보면 한 요청 안에서 **하나는 지워지고 하나는 통과한다** 는 것이 드러난다.
+      "receivedRequestedTenantHeader" to request.getHeader("X-Requested-Tenant"),
     )
   }
 }
