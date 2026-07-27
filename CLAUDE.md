@@ -258,12 +258,18 @@ FE가 토큰을 보게 되는 순간 BFF를 쓰는 이유가 사라진다.
 | **세션 쿠키 미전송** | 로그인은 되는데 매 요청이 401 | FE dev server와 게이트웨이의 origin이 다르면 쿠키가 안 실림 → **Vite dev proxy로 same-origin 유지**(권장) |
 | **CORS credentials** | preflight 통과했는데 쿠키 없음 | 별도 origin 유지 시 `Allow-Credentials: true` + **정확한 Origin**(와일드카드 불가) + FE `credentials: 'include'` |
 | **CSRF 토큰 전달** (Phase 9c) | GET 은 전부 정상인데 **인증된 POST 만 403**. 토큰을 실어 보내도 로그엔 `Did not find a CSRF token in the request` | 세 가지가 **모두** 필요하다 — ① 저장소를 쿠키로(`CookieServerCsrfTokenRepository.withHttpOnlyFalse()`) ② **XOR 핸들러 해제**(`ServerCsrfTokenRequestAttributeHandler`) ③ **구독 강제 필터**(WebFlux 의 `CsrfToken` 은 lazy `Mono` 라 구독 없이는 쿠키가 안 실린다) |
+| **dev proxy 주소가 realm 에 없다** (FE 통합) | 로그인이 `Invalid parameter: redirect_uri`. **게이트웨이 로그에는 아무것도 안 남는다**(302 는 정상 발행, 거절은 Keycloak) | 프록시가 Host 를 넘겨 게이트웨이가 만드는 redirect_uri 도 dev 주소(5173)가 된다 → realm 에 등록(`setup-realm.sh --env local`) |
+| **`loginUrl` 을 상대경로 그대로 사용** | cross-origin 배포에서만 로그인 이동이 **FE 호스트 404**. same-origin(로컬)에서는 **절대 드러나지 않는다** | 401 본문의 `loginUrl` 은 상대경로이고 그 경로는 게이트웨이에만 있다 → API base 를 붙여 절대화 |
+| **CORS 를 필터 빈으로만 등록** | preflight(OPTIONS)가 **401** 로 끊기고 콘솔엔 CORS 에러만 뜬다 | 인증 필터가 먼저 돈다 → 보안 체인에 `.cors {}` 로 연결 |
+| **캐시 키에 테넌트를 빼먹는다** | 다른 테넌트 목록이 그대로 보이고 **네트워크 요청조차 안 나간다** | 테넌트가 헤더로만 전달돼 URL 이 같다. 서버가 격리해도 클라이언트 캐시가 무너뜨린다 → queryKey 에 테넌트 포함 |
 
 > **CSRF 세 조각은 하나라도 빠지면 조용히 실패한다.** ①이 없으면 토큰이 세션에만 있어 클라이언트가
 > 읽을 수 없고, ②가 없으면 쿠키의 원본 값과 서버가 기대하는 마스킹 값이 어긋나며, ③이 없으면
 > 쿠키 자체가 응답에 실리지 않는다. **셋 다 증상이 "403" 하나로 같아서** 어느 조각이 빠졌는지
 > 응답만 봐서는 구분되지 않는다 — `org.springframework.security.web.server.csrf` 를 TRACE 로 켜야 갈린다.
 
+> 위 네 줄은 **샘플 FE 를 실제로 붙이며 겪은 것**이다. 상세와 실측은 `docs/learning/26`.
+>
 > **XHR 리다이렉트가 왜 헷갈리는가**: 302 응답을 `fetch`가 그대로 따라가 Keycloak 로그인 페이지를 요청하고,
 > 그 응답이 CORS 정책에 걸린다. 브라우저 콘솔에는 "CORS 에러"만 찍혀 **진짜 원인(미인증)이 가려진다.**
 > 로그인 리다이렉트는 반드시 **브라우저 주소창 이동(top-level navigation)** 이어야 한다.

@@ -91,6 +91,7 @@ samples/**/node_modules/
 samples/**/build/
 samples/**/.gradle/
 samples/**/dist/
+samples/**/.vite/
 samples/**/*.tsbuildinfo
 samples/**/.env
 samples/**/.env.local
