@@ -44,6 +44,13 @@ data class AcceptConsentCommand(
  */
 data class MyProfileResult(
   val email: String,
+  /**
+   * 반영 대기 중인 이메일. `null` 이면 진행 중인 변경이 없다.
+   *
+   * ⚠️ **조회에도 실어야 한다.** 접수 응답에만 담으면 새로고침한 클라이언트는 진행 중이라는
+   * 사실을 잃고 "변경이 안 됐다" 고 오해한다(실측에서 드러난 누락이다).
+   */
+  val pendingEmail: String?,
   val displayName: String,
   val locale: String,
   val onboardingState: String,
@@ -62,4 +69,33 @@ data class ConsentResult(
   val tosVersion: String,
   val acceptedAt: Instant,
   val valid: Boolean,
+)
+
+/**
+ * 이메일 변경 요청.
+ *
+ * 다른 프로필 Command 와 같이 **`userRef` 를 첫 필드로** 받는다 — 대상을 토큰에서만 정한다.
+ * 여기에 "대상 사용자" 를 추가하는 순간 남의 이메일을 바꾸는 API 가 된다.
+ */
+data class ChangeMyEmailCommand(
+  val userRef: String,
+  val newEmail: String,
+)
+
+/**
+ * 이메일 변경 접수 결과 — **두 값을 함께** 준다.
+ *
+ * `email` 은 지금 Keycloak 과 일치한다고 믿는 값이고, `pendingEmail` 은 반영 대기 중인 값이다.
+ * 하나만 주면 클라이언트가 "아직 반영 전" 을 표현할 수 없어 화면이 거짓말을 하게 된다.
+ * 반영이 끝나면 `pendingEmail` 이 `null` 이 되고 `email` 이 새 값으로 바뀐다.
+ */
+data class EmailChangeResult(
+  val email: String,
+  val pendingEmail: String?,
+)
+
+/** outbox payload — Keycloak 에 이메일 변경을 반영하라는 지시. */
+data class UpdateKeycloakEmailPayload(
+  val userRef: String,
+  val newEmail: String,
 )

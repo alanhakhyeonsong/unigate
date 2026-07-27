@@ -219,6 +219,18 @@ enum class OutboxEventType {
    * 전까지 유효하므로, outbox 지연 + 토큰 수명이 더해진 시간이 실제 잔존 시간이다.
    */
   REMOVE_GROUP_MEMBER,
+
+  /**
+   * Keycloak 사용자의 이메일을 바꾸라. payload 는
+   * [me.ramos.unigate.iam.application.user.dto.UpdateKeycloakEmailPayload].
+   *
+   * ## 이 지시만 **보상**을 갖는다
+   * 다른 지시들은 실패해도 "아직 반영되지 않은 상태" 로 멈추면 그만이다(테넌트는 PENDING 에
+   * 머물고, group 멤버는 추가되지 않는다). 이메일 변경은 **요청 자체가 로컬에 기록**되므로
+   * (`user_profile.pending_email`), 영구 실패하면 그 기록을 지워야 한다. 안 지우면 도메인이
+   * "진행 중" 으로 보고 **다음 변경 요청을 영원히 거절**한다.
+   */
+  UPDATE_KEYCLOAK_EMAIL,
 }
 
 enum class OutboxStatus {

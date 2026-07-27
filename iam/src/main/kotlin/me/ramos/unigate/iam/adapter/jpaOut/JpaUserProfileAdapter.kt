@@ -19,17 +19,28 @@ import java.time.Instant
  * 지금은 필드가 적어 매핑이 단순하다. 모델이 커지면 이 비용을 다시 저울질해야 한다 —
  * "분리해야 한다" 가 원칙이 아니라 **비용 대비 이득**의 문제이기 때문이다.
  *
- * ## `save` 가 upsert 인 이유
- * 도메인 `UserProfile` 에는 DB id 가 없다(저장 방식을 모르는 것이 원칙). 그래서 email 로 기존 행을
- * 찾아 갱신하거나 새로 만든다. **email 은 변경되지 않는다**는 전제가 깔려 있다 — 이메일 변경
- * 유스케이스가 생기면 이 매핑을 다시 봐야 한다.
+ * ## `save` 가 upsert 인 이유, 그리고 **무엇으로 행을 찾는가**
+ * 도메인 `UserProfile` 에는 DB id 가 없다(저장 방식을 모르는 것이 원칙). 그래서 저장 시 기존 행을
+ * 찾아 갱신하거나 새로 만든다.
+ *
+ * ⚠️ 예전에는 **email 로만** 찾았고, KDoc 에 "email 은 변경되지 않는다는 전제" 라고 적혀 있었다.
+ * 이메일 변경 유스케이스가 그 전제를 깬다 — 변경이 확정된 프로필을 저장하면 **새 email 로**
+ * 행을 찾게 되고, 없으니 INSERT 가 나가 **같은 사람의 프로필이 두 줄**이 된다.
+ * (email UNIQUE 덕에 폭발하지만, 그건 방어일 뿐 설계가 아니다.)
+ *
+ * 그래서 **`userRef` 가 있으면 그것으로 먼저 찾는다.** `userRef` 는 Keycloak `sub` 이고 불변이라
+ * 식별자로 옳다. 없는 경우(가입 대기 중 프로필)에만 email 로 되돌아간다 — 그 상태에서는
+ * email 이 유일한 단서다.
  */
 @Component
 class JpaUserProfileAdapter(
   private val repository: UserProfileJpaRepository,
 ) : UserProfileRepositoryPort {
   override fun save(profile: UserProfile): UserProfile {
-    val entity = repository.findByEmail(profile.email)?.apply { applyFrom(profile) } ?: profile.toNewEntity()
+    val existing =
+      profile.userRef?.let { repository.findByUserRef(it.value) }
+        ?: repository.findByEmail(profile.email)
+    val entity = existing?.apply { applyFrom(profile) } ?: profile.toNewEntity()
     return repository.save(entity).toModel()
   }
 
@@ -40,6 +51,9 @@ class JpaUserProfileAdapter(
   // ── 매핑 ──────────────────────────────────────────────────────────────────
 
   private fun UserProfileEntity.applyFrom(profile: UserProfile) {
+    // 이메일 변경이 확정되면 여기서 실제로 값이 바뀐다(그 전까지는 pendingEmail 만 움직인다).
+    email = profile.email
+    pendingEmail = profile.pendingEmail
     userRef = profile.userRef?.value
     onboardingState = profile.onboardingState
     displayName = profile.displayName
@@ -52,6 +66,7 @@ class JpaUserProfileAdapter(
   private fun UserProfile.toNewEntity(): UserProfileEntity =
     UserProfileEntity(
       email = email,
+      pendingEmail = pendingEmail,
       userRef = userRef?.value,
       onboardingState = onboardingState,
       displayName = displayName,
@@ -69,6 +84,7 @@ class JpaUserProfileAdapter(
   private fun UserProfileEntity.toModel(): UserProfile =
     UserProfile.restore(
       email = email,
+      pendingEmail = pendingEmail,
       userRef = userRef?.let { UserRef(it) },
       onboardingState = onboardingState,
       displayName = displayName,

@@ -73,6 +73,152 @@ class OutboxProcessorTest {
       lastError = null,
     )
 
+  /**
+   * **회귀 테스트 — 영구 실패 보상이 이벤트 타입을 가려야 한다.**
+   *
+   * P9b 가 고친 무한 재시도 루프는 "미분류 예외 → 롤백 → attempts 그대로" 였다. 그 수정은
+   * 가입(CREATE_KEYCLOAK_USER) 경로만 안전하게 만들었다 — 영구 실패 시 실행되는 보상 핸들러가
+   * payload 를 **항상 가입 payload 로 역직렬화**했기 때문이다.
+   *
+   * 그룹 이벤트가 미분류 예외로 실패하면 보상 핸들러 안에서 역직렬화가 터지고, 그 예외가
+   * 트랜잭션을 롤백시켜 **같은 루프가 되살아난다.** 레코드는 DEAD 로 확정돼야 한다.
+   */
+  @Test
+  fun `그룹 이벤트가 영구 실패해도 DEAD 로 확정된다 — 보상 핸들러에서 터지지 않는다`() {
+    val groupRecord =
+      OutboxRecord(
+        id = 7L,
+        eventType = OutboxEventType.CREATE_KEYCLOAK_GROUP,
+        payload = """{"tenantId":"acme"}""",
+        status = OutboxStatus.PENDING,
+        attempts = 0,
+        nextAttemptAt = Instant.parse("2026-07-26T00:00:00Z"),
+        lastError = null,
+      )
+    every { outboxPort.claimNext(any()) } returns groupRecord
+    // 미분류 실패를 만든다(재시도로 낫지 않는 버그성 실패).
+    every { identityProviderPort.createTenantGroup(any()) } throws IllegalStateException("boom")
+
+    processor.processOne()
+
+    val saved = slot<OutboxRecord>()
+    verify { outboxPort.update(capture(saved)) }
+    assertThat(saved.captured.status).isEqualTo(OutboxStatus.DEAD)
+  }
+
+  private fun emailChangeRecord() =
+    OutboxRecord(
+      id = 9L,
+      eventType = OutboxEventType.UPDATE_KEYCLOAK_EMAIL,
+      payload = """{"userRef":"kc-1","newEmail":"new@example.local"}""",
+      status = OutboxStatus.PENDING,
+      attempts = 0,
+      nextAttemptAt = Instant.parse("2026-07-26T00:00:00Z"),
+      lastError = null,
+    )
+
+  private fun activeProfileWithPendingEmail(): UserProfile {
+    val profile =
+      UserProfile.restore(
+        email = "old@example.local",
+        userRef = UserRef("kc-1"),
+        onboardingState = OnboardingState.ACTIVE,
+        displayName = "carol",
+        locale = "ko-KR",
+        consent = null,
+      )
+    profile.requestEmailChange("new@example.local")
+    return profile
+  }
+
+  @Test
+  fun `이메일 변경에 성공하면 요청 값이 확정 값으로 승격된다`() {
+    val profile = activeProfileWithPendingEmail()
+    every { outboxPort.claimNext(any()) } returns emailChangeRecord()
+    every { identityProviderPort.updateEmail("kc-1", "new@example.local") } returns Unit
+    every { userProfileRepository.findByUserRef(UserRef("kc-1")) } returns profile
+    every { userProfileRepository.save(any()) } answers { firstArg() }
+
+    processor.processOne()
+
+    assertThat(profile.email).isEqualTo("new@example.local")
+    assertThat(profile.pendingEmail).isNull()
+  }
+
+  @Test
+  fun `이메일 변경이 확정되면 EMAIL_CHANGED 를 전후 값과 함께 남긴다`() {
+    val profile = activeProfileWithPendingEmail()
+    every { outboxPort.claimNext(any()) } returns emailChangeRecord()
+    every { identityProviderPort.updateEmail(any(), any()) } returns Unit
+    every { userProfileRepository.findByUserRef(UserRef("kc-1")) } returns profile
+    every { userProfileRepository.save(any()) } answers { firstArg() }
+
+    processor.processOne()
+
+    val event = slot<AuditEvent>()
+    verify { recordAuditEventOutPort.record(capture(event)) }
+    assertThat(event.captured.type).isEqualTo(AuditEventType.EMAIL_CHANGED)
+    assertThat(event.captured.detail).containsEntry("before", "old@example.local")
+    assertThat(event.captured.detail).containsEntry("after", "new@example.local")
+  }
+
+  /**
+   * **보상 테스트.** 이걸 빠뜨리면 `pendingEmail` 이 영원히 남아 도메인이 다음 변경 요청을
+   * 계속 거절한다 — 사용자는 "한 번 실패한 뒤로 영영 못 바꾸는" 상태가 된다.
+   */
+  @Test
+  fun `이메일이 남의 것이면 요청을 취소한다 — 확정 값은 건드리지 않는다`() {
+    val profile = activeProfileWithPendingEmail()
+    every { outboxPort.claimNext(any()) } returns emailChangeRecord()
+    every { identityProviderPort.updateEmail(any(), any()) } throws
+      IdentityAlreadyExistsException("new@example.local")
+    every { userProfileRepository.findByUserRef(UserRef("kc-1")) } returns profile
+    every { userProfileRepository.save(any()) } answers { firstArg() }
+
+    processor.processOne()
+
+    assertThat(profile.pendingEmail).isNull()
+    assertThat(profile.email).isEqualTo("old@example.local")
+
+    val saved = slot<OutboxRecord>()
+    verify { outboxPort.update(capture(saved)) }
+    assertThat(saved.captured.status).isEqualTo(OutboxStatus.DEAD)
+  }
+
+  @Test
+  fun `보상하면 EMAIL_CHANGE_FAILED 를 남긴다 — 사용자에게 알릴 근거다`() {
+    val profile = activeProfileWithPendingEmail()
+    every { outboxPort.claimNext(any()) } returns emailChangeRecord()
+    every { identityProviderPort.updateEmail(any(), any()) } throws
+      IdentityAlreadyExistsException("new@example.local")
+    every { userProfileRepository.findByUserRef(UserRef("kc-1")) } returns profile
+    every { userProfileRepository.save(any()) } answers { firstArg() }
+
+    processor.processOne()
+
+    val event = slot<AuditEvent>()
+    verify { recordAuditEventOutPort.record(capture(event)) }
+    assertThat(event.captured.type).isEqualTo(AuditEventType.EMAIL_CHANGE_FAILED)
+    // 확정 값(유지된 주소)을 남기고, 시도했던 값은 detail 에 둔다.
+    assertThat(event.captured.targetEmail).isEqualTo("old@example.local")
+    assertThat(event.captured.detail).containsEntry("requestedEmail", "new@example.local")
+  }
+
+  @Test
+  fun `일시 장애면 요청을 취소하지 않는다 — 다음 시도에서 성공할 수 있다`() {
+    val profile = activeProfileWithPendingEmail()
+    every { outboxPort.claimNext(any()) } returns emailChangeRecord()
+    every { identityProviderPort.updateEmail(any(), any()) } throws
+      IdentityProviderUnavailableException("연결 실패")
+    every { userProfileRepository.findByUserRef(UserRef("kc-1")) } returns profile
+
+    processor.processOne()
+
+    // 보상은 **영구 실패에서만** 일어난다. 재시도 대상에서 취소하면 사용자의 요청이
+    // Keycloak 이 잠깐 흔들렸다는 이유로 사라진다.
+    assertThat(profile.pendingEmail).isEqualTo("new@example.local")
+  }
+
   @Test
   fun `집을 게 없으면 false 를 돌려줘 스케줄러가 멈춘다`() {
     every { outboxPort.claimNext(any()) } returns null
