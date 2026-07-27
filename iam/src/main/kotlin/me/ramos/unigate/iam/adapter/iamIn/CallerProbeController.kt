@@ -47,6 +47,17 @@ class CallerProbeController {
       // `azp` = 이 토큰을 받아간 client. BFF 이므로 게이트웨이 로그인 client 여야 한다.
       // 여기에 다른 값이 찍히면 예상 밖의 경로로 토큰이 흘러들어온 것이다.
       "authorizedParty" to jwt.getClaimAsString("azp"),
+      // Phase 9e: 소속 group 경로. GW 의 coarse 게이트(P9f)가 판단 근거로 삼을 값이라
+      // **눈으로 확인할 수단**이 있어야 한다 — 이게 비면 게이트가 아무것도 통과시키지 못한다.
+      //
+      // `/tenants/` 접두사로 테넌트만 걸러낸다. realm 에는 테넌트가 아닌 group 도 있어
+      // (`/unigate-users`) 전체를 그대로 쓰면 엉뚱한 group 을 테넌트로 오인한다.
+      "groups" to jwt.getClaimAsStringList("groups"),
+      "tenants" to
+        jwt
+          .getClaimAsStringList("groups")
+          ?.filter { it.startsWith("/tenants/") }
+          ?.map { it.removePrefix("/tenants/") },
       "expiresAt" to jwt.expiresAt?.toString(),
     )
   }
