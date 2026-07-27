@@ -11,7 +11,11 @@ Keycloak을 신원 저장소로 하는 사내 표준 IAM 플랫폼의 참조 구
 
 다운스트림은 인증/관리 흐름에서 Keycloak에 직접 접근하지 않는다(JWKS 서명검증만 허용).
 
-> GW의 coarse 인가는 Phase 9f에서 추가된다 — 현재 GW의 인가는 "인증됐는가"까지다.
+> GW의 coarse 인가는 Phase 9f에서 실제로 들어왔다 — `TenantGateFilter`(테넌트 멤버십 게이트 +
+> `X-Tenant-Id` strip 후 재주입). **route-level role 검사는 넣지 않았다** — 관리 평면의 역할 검사는 IAM 소관이다.
+> 게이트는 "빨리 거절"이지 **최종 방어선이 아니다.** 다운스트림은 자기 인가를 따로 가져야 한다
+> ([`docs/learning/23`](docs/learning/23-coarse-authz-tenant-gate.md) ·
+> [`24`](docs/learning/24-fail-closed-by-default-tenant-guard.md)).
 
 ## 기술 스택
 
@@ -52,12 +56,27 @@ unigate/
 ├── docker-compose.yml    # 로컬: postgres + valkey + valkey-sentinel
 ├── deploy/               # Helm 차트(alpha) + 로컬 직접 배포 스크립트
 ├── scripts/keycloak/     # realm 구성 자동화(setup-realm.sh)
+├── samples/              # 검증용 샘플 앱 — 아래 참고 (독립 빌드, ./gradlew build 와 무관)
+│   ├── downstream-demo/  #   샘플 다운스트림 BE (Resource Server, :8081)
+│   └── frontend-demo/    #   샘플 FE (React + TS + TanStack Query + Vite, :5173)
 └── docs/                 # 설계 문서 + docs/learning (학습 기록)
 ```
 
 의존성 방향은 **`adapter → application → domain` 단방향만** 허용하며, 문서가 아니라 **ArchUnit 테스트가 강제**한다.
 
-> `samples/`(샘플 다운스트림 BE·FE), `docs/plans/`, `*.secret.env` 는 **커밋 대상이 아니다**.
+> `docs/plans/`, `*.secret.env`, `.env*` 는 **커밋 대상이 아니다.** `samples/` 는 2026-07-27 부터
+> **커밋 대상**이다 — 아래 참고.
+
+### samples/ — 눈으로 확인하는 검증 장치
+
+게이트웨이·IAM 이 실제로 무엇을 지우고 무엇을 넣는지 **화면과 응답으로** 드러내기 위한 앱이다.
+unigate 의 산출물은 아니지만, 학습 문서와 PR 이 이 코드를 인용하므로 저장소에 둔다.
+
+`settings.gradle.kts` 에 `include` 하지 않는 **독립 Gradle 빌드**라 `./gradlew build` 는 영향을 받지 않는다.
+무시하는 것은 빌드 산출물과 로컬 비밀뿐이다 — `node_modules/` · `build/` · `.env` · `.env.alpha`.
+
+> ⚠️ **레퍼런스 구현이 아니다.** `/legacy/orders`·`/echo` 처럼 **일부러 취약하게 둔** 엔드포인트가 있다.
+> 무엇이 왜 취약한지는 [`samples/README.md`](samples/README.md) §3 의 표에 있다. 복사해 쓰지 말 것.
 
 ## 로컬 개발
 
@@ -75,6 +94,22 @@ set -a; source ./keycloak.secret.env; set +a
 ./gradlew :gateway:bootRun   # :8080 (Netty)
 ./gradlew :iam:bootRun       # :8090 (Tomcat, Virtual Thread)
 ```
+
+### 샘플 앱까지 함께 띄우기
+
+```bash
+(cd samples/downstream-demo && ./gradlew bootRun)          # :8081 샘플 다운스트림
+(cd samples/frontend-demo && npm install && npm run dev)   # :5173 샘플 FE
+```
+
+브라우저는 **5173** 으로 연다. Vite dev proxy 가 게이트웨이를 같은 origin 으로 보이게 해야
+세션 쿠키와 CSRF 쿠키가 그대로 동작한다.
+
+> Keycloak realm 에 `http://localhost:5173/login/oauth2/code/keycloak` 이 등록돼 있어야 한다
+> (`scripts/keycloak/setup-realm.sh --env local` 이 등록한다). 없으면 로그인이
+> `Invalid parameter: redirect_uri` 로 끊기고 **게이트웨이 로그에는 아무것도 남지 않는다** —
+> 302 는 정상 발행되고 거절하는 쪽이 Keycloak 이기 때문이다.
+> BFF + SPA 조합에서 밟은 함정 전체는 [`docs/learning/26`](docs/learning/26-bff-spa-integration.md).
 
 ### 통합 테스트 (로컬 전용)
 
@@ -118,6 +153,7 @@ CI/CD 파이프라인 없이 로컬에서 직접 배포한다.
 | [`docs/IAM_PLATFORM_DECISION.md`](docs/IAM_PLATFORM_DECISION.md) | IAM 플랫폼 확장 결정 · 목표 아키텍처 |
 | [`docs/KEYCLOAK_REALM_SETUP.md`](docs/KEYCLOAK_REALM_SETUP.md) | Keycloak realm 구성·검증·런북 |
 | [`docs/learning/`](docs/learning/README.md) | 학습 기록 — 겪은 함정과 판단 근거 |
+| [`samples/README.md`](samples/README.md) | 샘플 앱 실행법 · **일부러 취약하게 둔 곳 목록** |
 
 `docs/learning/`은 이 프로젝트의 부산물이 아니라 **산출물**이다. 처음 쓰는 기술(SCG·WebFlux·R2DBC·
 Virtual Thread·outbox)에서 실제로 부딪힌 것과 그때의 판단 기준이 남아 있다.
