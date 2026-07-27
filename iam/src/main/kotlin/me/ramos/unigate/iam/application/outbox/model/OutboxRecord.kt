@@ -188,6 +188,19 @@ data class OutboxRecord(
 enum class OutboxEventType {
   /** Keycloak 에 사용자를 생성하라. payload 는 [me.ramos.unigate.iam.application.user.dto.CreateKeycloakUserPayload]. */
   CREATE_KEYCLOAK_USER,
+
+  /**
+   * Keycloak 에 테넌트 group(`/tenants/{id}`)을 만들라 (Phase 9c-2).
+   * payload 는 [me.ramos.unigate.iam.application.tenant.dto.CreateTenantGroupPayload].
+   *
+   * ## outbox 의 **두 번째 사용처**다
+   * 테넌트 생성도 가입과 같은 모양의 문제다 — IAM DB 쓰기와 Keycloak 쓰기가 한 트랜잭션에
+   * 묶이지 않는다. 같은 해법(로컬 DB 에 지시를 남기고 워커가 반영)을 그대로 쓴다.
+   *
+   * P9b 에서 워커의 결함(미분류 예외 무한 재시도)을 먼저 고친 이유가 이것이다 —
+   * 약한 기반 위에 사용처를 늘리면 같은 결함이 새 경로에도 그대로 복제된다.
+   */
+  CREATE_KEYCLOAK_GROUP,
 }
 
 enum class OutboxStatus {

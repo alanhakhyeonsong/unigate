@@ -38,6 +38,28 @@ interface IdentityProviderPort {
 
   /** 이메일로 신원을 찾는다. 없으면 `null`. 멱등 생성과 조회 두 곳에서 쓴다. */
   fun findByEmail(email: String): UserRef?
+
+  /**
+   * 테넌트 group(`/tenants/{tenantId}`)을 만든다 (Phase 9c-2).
+   *
+   * ## 왜 group 인가
+   * 단일 realm 에서 테넌트를 표현하는 방법으로 group 을 골랐다(`IAM_PLATFORM_DECISION.md` §7.1).
+   * realm role 은 테넌트마다 하나씩 늘어 폭증하고 계층을 못 만든다. user attribute 는 단일값이라
+   * **한 사용자가 여러 테넌트에 속하는** 우리 도메인과 애초에 맞지 않는다.
+   *
+   * ## 멱등해야 한다
+   * [createUser] 와 같은 이유다 — outbox 는 최소 1회 실행이라 같은 지시가 두 번 올 수 있다.
+   * 이미 있는 group 을 만나면 **성공으로 처리**해야 하며, 예외를 던지면 정상 재시도가
+   * 영구 실패로 둔갑한다.
+   *
+   * ## 부모 group 도 함께 보장한다
+   * `/tenants/{id}` 는 `tenants` 라는 부모 group 아래의 자식이다. 구현체는 부모가 없으면
+   * 만들어야 한다 — realm 초기 상태에 그것이 있으리라 가정하면, realm 을 새로 만든 환경에서
+   * **첫 테넌트 생성이 실패**한다.
+   *
+   * @throws IdentityProviderUnavailableException 통신·인증 실패 등 **재시도하면 될 수도 있는** 실패
+   */
+  fun createTenantGroup(tenantId: String)
 }
 
 /**

@@ -204,6 +204,19 @@ class IamSecurityBoundaryTest {
       .andExpect(status().isForbidden)
   }
 
+  @Test
+  fun `테넌트 생성도 관리자만 할 수 있다`() {
+    // P9c-2 에서 관리 경로가 하나 늘었다. 접두사 규칙 덕에 별도 설정 없이 곧바로 보호된다 —
+    // 이 테스트는 그 성질이 유지되는지를 고정한다.
+    mockMvc
+      .perform(
+        post("/iam/admin/tenants")
+          .with(callerToken())
+          .contentType(MediaType.APPLICATION_JSON)
+          .content("""{"tenantId":"acme","displayName":"에이컴"}"""),
+      ).andExpect(status().isForbidden)
+  }
+
   /**
    * 게이트웨이가 relay 했을 법한 토큰을 흉내 낸다.
    *
