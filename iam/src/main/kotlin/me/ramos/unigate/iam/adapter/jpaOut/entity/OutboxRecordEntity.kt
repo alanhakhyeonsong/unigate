@@ -51,6 +51,10 @@ class OutboxRecordEntity(
   var nextAttemptAt: Instant,
   @Column(name = "last_error")
   var lastError: String? = null,
+  @Column(name = "dead_at")
+  var deadAt: Instant? = null,
+  @Column(name = "last_exception_class", length = 255)
+  var lastExceptionClass: String? = null,
   @Column(name = "created_at", nullable = false, updatable = false)
   val createdAt: Instant = Instant.now(),
   @Column(name = "updated_at", nullable = false)

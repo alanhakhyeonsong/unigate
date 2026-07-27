@@ -79,7 +79,12 @@ class OutboxRecordTest :
 
     given("재시도해도 소용없는 실패 (이메일 중복 등)") {
       `when`("영구 실패로 처리하면") {
-        val record = newRecord().failedPermanently("identity_already_exists")
+        val record =
+          newRecord().failedPermanently(
+            now,
+            "identity_already_exists",
+            "me.ramos.Boom",
+          )
 
         then("시도 횟수와 무관하게 즉시 DEAD 다") {
           record.status shouldBe OutboxStatus.DEAD
@@ -88,6 +93,30 @@ class OutboxRecordTest :
 
         then("사유가 남아 운영자가 원인을 안다") {
           record.lastError shouldBe "identity_already_exists"
+        }
+
+        then("죽은 시각과 예외 클래스가 남는다 — 사후 조사에서 가장 먼저 묻는 값이다") {
+          // 메시지가 아니라 **클래스명**만 담는다. 메시지에는 외부 응답 본문이 섞여
+          // 토큰·secret 이 들어올 수 있다(CLAUDE.md §8).
+          record.deadAt shouldBe now
+          record.lastExceptionClass shouldBe "me.ramos.Boom"
+        }
+      }
+    }
+
+    given("재시도 상한에 걸려 죽은 지시") {
+      `when`("DEAD 가 되면") {
+        var record = newRecord()
+        repeat(OutboxRecord.MAX_ATTEMPTS) {
+          record = record.failedRetryable(now, "boom", "me.ramos.Boom")
+        }
+
+        then("영구 실패와 마찬가지로 죽은 시각이 남는다") {
+          // 상한 초과와 영구 실패는 도달 경로가 다르지만 **결과는 같은 DEAD** 다.
+          // 한쪽만 deadAt 을 채우면 운영 조회에서 절반이 비어 보인다.
+          record.status shouldBe OutboxStatus.DEAD
+          record.deadAt shouldBe now
+          record.lastExceptionClass shouldBe "me.ramos.Boom"
         }
       }
     }

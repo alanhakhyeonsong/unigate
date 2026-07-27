@@ -43,6 +43,8 @@ class OutboxProcessorTest {
   private val recordAuditEventOutPort =
     mockk<me.ramos.unigate.iam.application.audit.port.outbound.RecordAuditEventOutPort>(relaxed = true)
 
+  private val circuit = OutboxCircuit(clock)
+
   private val processor =
     OutboxProcessor(
       outboxPort,
@@ -50,6 +52,7 @@ class OutboxProcessorTest {
       userProfileRepository,
       serializer,
       recordAuditEventOutPort,
+      circuit,
       clock,
     )
 
@@ -193,5 +196,109 @@ class OutboxProcessorTest {
     // outbox 레코드는 실패 시 며칠씩 DB 에 남는다. 외부 메시지를 그대로 넣으면 토큰이 샐 수 있다.
     assertThat(saved.captured.lastError).isEqualTo("identity_provider_unavailable")
     assertThat(saved.captured.lastError).doesNotContain("secret-token-leaked-here")
+  }
+
+  // ── Phase 9b: 미분류 예외와 회로 차단기 ────────────────────────────────
+
+  @Test
+  fun `분류되지 않은 예외도 DEAD 로 보낸다 — 무한 재시도 루프를 막는다`() {
+    // ⚠️ 이 테스트가 P9b 의 핵심이다.
+    //
+    // 예전에는 예외를 두 종류만 잡고 나머지는 전파시켰다. 그러면 @Transactional 이 롤백하는데,
+    // **롤백에는 클레임과 attempts 증가도 포함**되어 레코드가 PENDING 그대로 남았다.
+    // 결과는 5초마다 같은 실패를 영원히 반복 — 재시도 상한도 DEAD 도 닿지 못하는 경로였다.
+    //
+    // 실제로 그런 경로가 있었다: 아래처럼 프로필 조회가 null 이면
+    // `error("outbox 지시에 대응하는 프로필이 없습니다")` 가 터진다.
+    every { outboxPort.claimNext(any()) } returns pendingRecord()
+    every { identityProviderPort.createUser(any()) } returns UserRef("kc-123")
+    every { userProfileRepository.findByEmail("alice@example.local") } returns null
+
+    val processed = processor.processOne()
+
+    // 예외가 밖으로 나가지 않는다 — 나가면 트랜잭션이 롤백되어 원래 문제로 돌아간다.
+    assertThat(processed).isTrue()
+
+    val saved = slot<OutboxRecord>()
+    verify { outboxPort.update(capture(saved)) }
+    assertThat(saved.captured.status).isEqualTo(OutboxStatus.DEAD)
+    assertThat(saved.captured.lastError).isEqualTo("unclassified_failure")
+    // 원인 추적용 — 클래스명만 남긴다(메시지에는 외부 응답이 섞일 수 있다).
+    assertThat(saved.captured.lastExceptionClass).contains("IllegalStateException")
+  }
+
+  @Test
+  fun `미분류 실패도 사용자에게 알릴 수 있게 프로필을 실패 상태로 옮긴다`() {
+    // 원인이 무엇이든 사용자 입장에서는 "가입했는데 아무 일도 안 일어남" 이다.
+    // 프로필이 PENDING_IDENTITY 에 머무르면 알릴 방법이 없다.
+    val profile = UserProfile.register("alice@example.local", "alice")
+    every { outboxPort.claimNext(any()) } returns pendingRecord()
+    every { identityProviderPort.createUser(any()) } throws RuntimeException("예상 못 한 무언가")
+    every { userProfileRepository.findByEmail("alice@example.local") } returns profile
+
+    processor.processOne()
+
+    assertThat(profile.onboardingState).isEqualTo(OnboardingState.IDENTITY_FAILED)
+    val audited = slot<AuditEvent>()
+    verify { recordAuditEventOutPort.record(capture(audited)) }
+    assertThat(audited.captured.reasonCode).isEqualTo("unclassified_failure")
+  }
+
+  @Test
+  fun `회로가 열리면 레코드를 집지 않는다 — attempts 를 보호한다`() {
+    // 외부 장애가 길어질 때 클레임을 계속하면, 잘못이 없는 정상 레코드의 attempts 가 소진되어
+    // DEAD 로 떨어진다. 그래서 클레임 **전에** 회로를 묻는다.
+    every { outboxPort.claimNext(any()) } returns pendingRecord()
+    every { identityProviderPort.createUser(any()) } throws
+      IdentityProviderUnavailableException("keycloak down")
+
+    // 연속 실패로 회로를 연다.
+    repeat(OutboxCircuit.FAILURE_THRESHOLD) { processor.processOne() }
+
+    val claimsBefore = OutboxCircuit.FAILURE_THRESHOLD
+    val processed = processor.processOne()
+
+    assertThat(processed).isFalse()
+    // 회로가 열린 뒤로는 claimNext 가 더 불리지 않았다.
+    verify(exactly = claimsBefore) { outboxPort.claimNext(any()) }
+  }
+
+  @Test
+  fun `영구 실패는 회로를 열지 않는다 — 외부가 아니라 그 레코드의 문제다`() {
+    // 중복 이메일 같은 실패가 회로를 열면, 문제 없는 다른 레코드들까지 멈춰 선다.
+    every { outboxPort.claimNext(any()) } returns pendingRecord()
+    every { identityProviderPort.createUser(any()) } throws
+      IdentityAlreadyExistsException("alice@example.local")
+    // 레코드마다 다른 프로필이다(같은 객체를 재사용하면 상태 전이가 겹친다).
+    every { userProfileRepository.findByEmail("alice@example.local") } answers {
+      UserProfile.register("alice@example.local", "alice")
+    }
+
+    repeat(OutboxCircuit.FAILURE_THRESHOLD + 2) { processor.processOne() }
+
+    // 여전히 집는다.
+    assertThat(processor.processOne()).isTrue()
+  }
+
+  @Test
+  fun `이미 실패 상태인 프로필에 다시 실패 처리를 해도 터지지 않는다`() {
+    // outbox 는 최소 1회 실행이라 같은 지시가 두 번 올 수 있고, 운영자가 DEAD 를 재처리하면
+    // 확실히 두 번 온다. 그때 IDENTITY_FAILED → IDENTITY_FAILED 전이를 시도하면 도메인이
+    // 거부해 **실패 처리 도중에 또 실패**한다.
+    val profile = UserProfile.register("alice@example.local", "alice")
+    profile.failIdentity()
+
+    every { outboxPort.claimNext(any()) } returns pendingRecord()
+    every { identityProviderPort.createUser(any()) } throws
+      IdentityAlreadyExistsException("alice@example.local")
+    every { userProfileRepository.findByEmail("alice@example.local") } returns profile
+
+    // 예외가 밖으로 나가지 않는다.
+    assertThat(processor.processOne()).isTrue()
+
+    val saved = slot<OutboxRecord>()
+    verify { outboxPort.update(capture(saved)) }
+    // 미분류(unclassified_failure)가 아니라 원래 사유로 기록돼야 한다.
+    assertThat(saved.captured.lastError).isEqualTo("identity_already_exists")
   }
 }
