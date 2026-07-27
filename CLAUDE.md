@@ -244,6 +244,12 @@ FE가 토큰을 보게 되는 순간 BFF를 쓰는 이유가 사라진다.
 | **XHR 리다이렉트** | `fetch()` 로 보호 리소스 호출 시 원인 불명의 CORS 에러 | 게이트웨이가 XHR에는 302 대신 **401 + 로그인 URL** 반환. FE가 `window.location` 으로 **top-level 이동** |
 | **세션 쿠키 미전송** | 로그인은 되는데 매 요청이 401 | FE dev server와 게이트웨이의 origin이 다르면 쿠키가 안 실림 → **Vite dev proxy로 same-origin 유지**(권장) |
 | **CORS credentials** | preflight 통과했는데 쿠키 없음 | 별도 origin 유지 시 `Allow-Credentials: true` + **정확한 Origin**(와일드카드 불가) + FE `credentials: 'include'` |
+| **CSRF 토큰 전달** (Phase 9c) | GET 은 전부 정상인데 **인증된 POST 만 403**. 토큰을 실어 보내도 로그엔 `Did not find a CSRF token in the request` | 세 가지가 **모두** 필요하다 — ① 저장소를 쿠키로(`CookieServerCsrfTokenRepository.withHttpOnlyFalse()`) ② **XOR 핸들러 해제**(`ServerCsrfTokenRequestAttributeHandler`) ③ **구독 강제 필터**(WebFlux 의 `CsrfToken` 은 lazy `Mono` 라 구독 없이는 쿠키가 안 실린다) |
+
+> **CSRF 세 조각은 하나라도 빠지면 조용히 실패한다.** ①이 없으면 토큰이 세션에만 있어 클라이언트가
+> 읽을 수 없고, ②가 없으면 쿠키의 원본 값과 서버가 기대하는 마스킹 값이 어긋나며, ③이 없으면
+> 쿠키 자체가 응답에 실리지 않는다. **셋 다 증상이 "403" 하나로 같아서** 어느 조각이 빠졌는지
+> 응답만 봐서는 구분되지 않는다 — `org.springframework.security.web.server.csrf` 를 TRACE 로 켜야 갈린다.
 
 > **XHR 리다이렉트가 왜 헷갈리는가**: 302 응답을 `fetch`가 그대로 따라가 Keycloak 로그인 페이지를 요청하고,
 > 그 응답이 CORS 정책에 걸린다. 브라우저 콘솔에는 "CORS 에러"만 찍혀 **진짜 원인(미인증)이 가려진다.**

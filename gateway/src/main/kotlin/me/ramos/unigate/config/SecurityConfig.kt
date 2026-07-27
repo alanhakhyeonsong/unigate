@@ -1,9 +1,11 @@
 package me.ramos.unigate.config
 
+import me.ramos.unigate.adapter.gatewayIn.CsrfTokenCookieFilter
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.core.env.Environment
 import org.springframework.security.config.annotation.web.reactive.EnableWebFluxSecurity
+import org.springframework.security.config.web.server.SecurityWebFiltersOrder
 import org.springframework.security.config.web.server.ServerHttpSecurity
 import org.springframework.security.oauth2.client.InMemoryReactiveOAuth2AuthorizedClientService
 import org.springframework.security.oauth2.client.oidc.web.server.logout.OidcClientInitiatedServerLogoutSuccessHandler
@@ -24,7 +26,9 @@ import org.springframework.security.web.server.authentication.logout.SecurityCon
 import org.springframework.security.web.server.authentication.logout.ServerLogoutHandler
 import org.springframework.security.web.server.authentication.logout.ServerLogoutSuccessHandler
 import org.springframework.security.web.server.authorization.ServerAccessDeniedHandler
+import org.springframework.security.web.server.csrf.CookieServerCsrfTokenRepository
 import org.springframework.security.web.server.csrf.CsrfWebFilter
+import org.springframework.security.web.server.csrf.ServerCsrfTokenRequestAttributeHandler
 import org.springframework.security.web.server.util.matcher.AndServerWebExchangeMatcher
 import org.springframework.security.web.server.util.matcher.NegatedServerWebExchangeMatcher
 import org.springframework.security.web.server.util.matcher.ServerWebExchangeMatcher
@@ -128,19 +132,42 @@ class SecurityConfig(
       // 때문이다. 실제로 여기를 빠뜨렸을 때 CSRF 403 만 `text/plain: Access Denied` 로 나갔다.
       // 같은 핸들러를 명시적으로 다시 꽂아 403 응답 형식을 하나로 맞춘다.
       .csrf { csrf ->
+        // ── 토큰 저장소를 쿠키로 (Phase 9c) ──────────────────────────────────
+        // 기본값은 **세션 저장소**다. 그러면 토큰이 세션 안에만 있어 API 클라이언트(SPA·스크립트)가
+        // 읽을 방법이 없다 — GW 는 토큰을 심어줄 HTML 페이지도 렌더링하지 않는다.
+        // 그 상태에서는 **인증된 POST 를 아무도 성공시킬 수 없다.**
+        //
+        // `withHttpOnlyFalse()` 는 JS 가 읽어야 하므로 필수다. 이것이 XSS 에 토큰을 노출하는 것은
+        // 맞지만, 애초에 XSS 가 성립하면 공격자는 그 페이지에서 직접 요청을 보낼 수 있어
+        // CSRF 토큰 유무가 방어선이 되지 못한다. 표준 double-submit 패턴의 전제다.
+        csrf.csrfTokenRepository(CookieServerCsrfTokenRepository.withHttpOnlyFalse())
+
+        // ── XOR 인코딩을 끈다 (Phase 9c) ────────────────────────────────────
+        // Spring Security 6 의 기본값은 `XorServerCsrfTokenRequestAttributeHandler` 다.
+        // BREACH 방어를 위해 토큰에 **요청마다 다른 마스크**를 씌워 내보내고, 받을 때 그것을
+        // 풀어 원본과 비교한다.
+        //
+        // 그 방식은 **서버가 렌더링한 폼**에 토큰을 심는 구조를 전제한다. 쿠키에서 읽어 헤더로
+        // 보내는 클라이언트에게는 맞지 않는다 — 쿠키에 저장되는 것은 **원본**이고 서버가 기대하는
+        // 것은 **마스킹된 값**이라, 쿠키 값을 그대로 보내면 디코딩에 실패한다.
+        //
+        // 실제 증상: `Did not find a CSRF token in the request`(TRACE) 와 함께 **403**.
+        // 토큰을 분명히 실어 보냈는데 "없다"고 하므로, 로그를 켜기 전에는 값 불일치로 보인다.
+        //
+        // 대가로 BREACH 완화를 포기한다. 그 공격은 (1) 응답이 압축되고 (2) 공격자가 요청을
+        // 반복 유도하며 (3) 응답 크기를 관찰할 수 있어야 성립한다. 토큰을 쿠키로 내려보내는 순간
+        // 어차피 응답 본문에 싣지 않으므로 그 조건이 약해진다.
+        csrf.csrfTokenRequestHandler(ServerCsrfTokenRequestAttributeHandler())
+
         csrf.accessDeniedHandler(accessDeniedHandler)
         csrf.requireCsrfProtectionMatcher(csrfProtectionMatcher())
       }
-      // CSRF 는 **기본값(활성)** 으로 되돌렸다. 이전 단계의 `.csrf { it.disable() }` 는
-      // 인증이 없던 시기의 임시 조치였다. 세션 쿠키로 인증하는 순간 브라우저는 교차 사이트
-      // 요청에도 쿠키를 자동으로 실어 보내므로 CSRF 가 실제 공격 표면이 된다.
+      // ⚠️ 저장소만 바꾸면 **쿠키가 실리지 않는다.** WebFlux 에서 `CsrfToken` 은 lazy 한 `Mono` 라
+      // 아무도 구독하지 않으면 토큰 생성도 쿠키 쓰기도 일어나지 않는다. 그런데 응답은 정상 200 이라
+      // 실패가 드러나지 않는다([CsrfTokenCookieFilter] KDoc 에 증상과 원리를 적어뒀다).
       //
-      // 지금 검증 대상(`GET /api/echo`, `GET /debug/**`)은 안전 메서드라 영향이 없다.
-      // 상태 변경 요청(POST 등)을 다루는 시점 — 즉 샘플 FE 연동 때 — 토큰 전달 방식을 정한다.
-      // TODO(샘플 FE 연동 시): SPA 는 세션에 담긴 CSRF 토큰을 읽을 수 없다.
-      //   `CookieServerCsrfTokenRepository.withHttpOnlyFalse()` 로 쿠키 전달을 검토하되,
-      //   WebFlux 에서는 `CsrfToken` 이 지연 평가돼 응답에 쿠키가 실리지 않는 함정이 있다
-      //   (구독을 강제하는 WebFilter 가 별도로 필요하다).
+      // `CSRF` **뒤**에 등록해야 한다 — `CsrfWebFilter` 가 attribute 를 넣은 다음이어야 읽을 수 있다.
+      .addFilterAfter(CsrfTokenCookieFilter(), SecurityWebFiltersOrder.CSRF)
       .build()
 
   /**

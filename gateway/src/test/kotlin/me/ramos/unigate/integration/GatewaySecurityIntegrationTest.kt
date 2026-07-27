@@ -1,9 +1,11 @@
 package me.ramos.unigate.integration
 
+import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.test.web.server.LocalServerPort
+import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
 import org.springframework.test.context.ActiveProfiles
 import org.springframework.test.web.reactive.server.WebTestClient
@@ -97,6 +99,66 @@ class GatewaySecurityIntegrationTest {
       .expectBody()
       .jsonPath("$.reasonCode")
       .isEqualTo("downstream_unavailable")
+  }
+
+  @Test
+  fun `안전한 요청에 CSRF 토큰이 쿠키로 내려온다`() {
+    // ⚠️ 이 테스트가 없으면 **아무도 POST 를 성공시킬 수 없는 상태**가 조용히 유지된다.
+    //
+    // CSRF 토큰 저장소가 기본값(세션)이면 토큰이 세션 안에만 있어 API 클라이언트가 읽을 방법이
+    // 없다. GW 는 토큰을 심어줄 HTML 을 렌더링하지도 않는다. 그런데 그 상태에서도 GET 은 전부
+    // 정상 200 이라 아무 문제가 없어 보인다 — 인증된 POST 를 실제로 보내봐야 403 으로 드러난다.
+    //
+    // 저장소를 쿠키로 바꾼 것만으로도 부족하다. WebFlux 에서 CsrfToken 은 lazy 한 Mono 라
+    // 구독하지 않으면 쿠키가 실리지 않는다(CsrfTokenCookieFilter 가 구독을 강제한다).
+    // 그 필터를 빼면 이 테스트만 빨갛게 된다.
+    client
+      .get()
+      .uri("/actuator/health")
+      .exchange()
+      .expectStatus()
+      .isOk
+      .expectCookie()
+      .exists("XSRF-TOKEN")
+      // JS 가 읽어야 하므로 HttpOnly 여서는 안 된다. double-submit 패턴의 전제다.
+      .expectCookie()
+      .httpOnly("XSRF-TOKEN", false)
+  }
+
+  @Test
+  fun `쿠키로 받은 CSRF 토큰을 헤더로 보내면 통과한다`() {
+    // 토큰을 **받을 수 있다**는 것과 그 토큰이 **통한다**는 것은 다른 문제다.
+    //
+    // Spring Security 6 의 기본 핸들러(XorServerCsrfTokenRequestAttributeHandler)는 토큰에
+    // 요청마다 다른 마스크를 씌워 내보낸다. 그 방식에서는 쿠키의 원본 값을 그대로 헤더에 실으면
+    // **디코딩에 실패해 403** 이고, 로그에는 "Did not find a CSRF token in the request" 로 찍힌다 —
+    // 토큰을 분명히 보냈는데 "없다"고 하므로 원인을 찾기 어렵다.
+    //
+    // 이 테스트는 그 조합(쿠키 저장소 + XOR 해제)이 실제로 통하는지를 고정한다.
+    val token =
+      client
+        .get()
+        .uri("/actuator/health")
+        .exchange()
+        .expectStatus()
+        .isOk
+        .returnResult(String::class.java)
+        .responseCookies
+        .getFirst("XSRF-TOKEN")
+        ?.value
+
+    assertThat(token).isNotBlank()
+
+    client
+      .post()
+      .uri("/logout")
+      .cookie("XSRF-TOKEN", token!!)
+      .header("X-XSRF-TOKEN", token)
+      .exchange()
+      // 확인하려는 것은 상태코드 자체가 아니라 **CsrfWebFilter 에 막히지 않았다**는 사실이다.
+      // (로그아웃 자체는 미인증이라 리다이렉트로 끝난다.)
+      .expectStatus()
+      .value { status -> assertThat(status).isNotEqualTo(HttpStatus.FORBIDDEN.value()) }
   }
 
   @Test
