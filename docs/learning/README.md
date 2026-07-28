@@ -36,6 +36,9 @@
 | [24](24-fail-closed-by-default-tenant-guard.md) | 잊으면 닫히는 기본값 — 다운스트림 테넌트 격리를 구조로 옮기기 | 9 | 학습중 | 검사를 컨트롤러에서 **인가 규칙과 저장소로** 옮긴다. 잊었을 때의 결과가 데이터 유출이 아니라 **403 과 컴파일 에러**가 되게 |
 | [25](25-email-change-outbox-compensation.md) | 되돌릴 것이 있는 outbox — 이메일 변경과 보상 | 9+ | 학습중 | 어려운 건 성공이 아니라 **실패한 뒤의 상태**다. 확정 값과 요청 값을 나눠 **보상을 필드 하나 지우기**로 줄였다 |
 | [26](26-bff-spa-integration.md) | BFF 에 SPA 를 붙이며 배운 것 — 토큰이 없는 프론트엔드 | 9+ | 학습중 | FE 는 토큰을 모른다. 어려운 건 인증이 아니라 **origin·쿠키·"아직 반영 안 됨"** 이었다 |
+| [27](27-helm-library-chart-and-alpha-deploy.md) | 모듈별 Helm 차트와 실전 배포 | 6 | 학습중 | 비밀은 git 말고 **`helm get values -a`** 로도 샌다. 배포 오류는 레지스트리·인증·용량으로 위장한다 |
+| [28](28-k6-loadtest-silent-failures.md) | 부하테스트가 조용히 실패하는 법 | 6 | 학습중 | 429 가 0건이고 checks 가 100% 통과인데 아무것도 측정하지 않을 수 있다. **성공만 검사하면 실패가 침묵한다** |
+| [29](29-k6-load-testing-basics.md) | k6 실행 모델 — 생명주기 · executor · 판정 | 6 | 학습중 | 28 의 실패들이 전부 같은 뿌리였다. **check 는 실패해도 exit 0, threshold 만 exit 99** |
 
 상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
 
@@ -104,6 +107,22 @@
 - [x] **보상 트랜잭션** — outbox 로 두 시스템을 쓸 때 영구 실패에서 로컬을 되돌리는 법 → [25](25-email-change-outbox-compensation.md)
 - [ ] **claim 기반 인가의 반영 지연** — 멤버십을 해제해도 토큰 만료(5분) 전까지 통과한다. 즉시 차단 수단은 아직 없다
 - [ ] **세션 토큰 갱신 경로의 재발** — repository 로 토큰을 직접 꺼내면 만료를 갱신하지 못한다. [04](04-oauth2-authorization-code-bff.md) §6 과 [23](23-coarse-authz-tenant-gate.md) §4.6 이 **같은 실패의 두 번째 발생**이다
+
+### Phase 6 — 실전 Alpha 배포 · 부하테스트
+
+- [x] **library chart 로 템플릿을 1벌로 유지하기** — 앱마다 복제하면 복제본이 서서히 갈라진다 → [27](27-helm-library-chart-and-alpha-deploy.md) §2.1
+- [x] **비밀이 새는 두 번째 경로** — git 을 막아도 `helm get values -a` 로 평문이 나온다. 차트가 Secret 을 만들지 않게 했다 → [27](27-helm-library-chart-and-alpha-deploy.md) §3.2
+- [x] **배포 오류가 다른 것으로 위장한다** — arm64/amd64 는 push 문제로, 사설IP 누락은 자격증명 문제로, 예약 포화는 용량 부족으로 보인다 → [27](27-helm-library-chart-and-alpha-deploy.md) §5.1~5.3
+- [x] **`connection attempt failed` ≠ `authentication failed`** — 전자는 TCP, 후자는 인증. 구분하면 조사 범위가 절반으로 준다 → [27](27-helm-library-chart-and-alpha-deploy.md) §5.2
+- [x] **성공만 검사하면 실패가 침묵한다** — checks 100% 통과인데 아무것도 측정하지 않은 회차 → [28](28-k6-loadtest-silent-failures.md) §5.1
+- [x] **k6 쿠키 jar 의 수명은 iteration** — VU 가 아니다. BFF 부하테스트에서 가장 틀리기 쉬운 곳 → [28](28-k6-loadtest-silent-failures.md) §3.2
+- [x] **check 와 threshold 는 다른 물건이다** — check 는 100% 실패해도 **exit 0**. 판정을 만드는 건 threshold 뿐 → [29](29-k6-load-testing-basics.md) §3.3 · §4.2
+- [x] **executor 는 "무엇을 고정할지" 를 고르는 것** — VU 기반은 용량, 도착률 기반은 정책 경계 → [29](29-k6-load-testing-basics.md) §3.4
+- [x] **VU 가 모자라면 부하가 조용히 줄어든다** — `dropped_iterations` 로만 보이고 종료코드는 0 → [29](29-k6-load-testing-basics.md) §4.3
+- [x] **request 는 스케줄링과 HPA 가 공유하는데 요구 방향이 반대다** — 낮추면 스케줄은 되고 HPA 는 과민해진다 → [28](28-k6-loadtest-silent-failures.md) §5.3
+- [ ] **최대 처리량과 병목 위치** — 이번 수치는 HPA 상한에 막힌 값이다. 노드 여유 확보 후 재측정 필요 → [28](28-k6-loadtest-silent-failures.md) §6
+- [ ] **429 를 받은 클라이언트의 재시도 정책** — 거절이 빠르다는 것까지만 봤다. backoff·`Retry-After` 는 정하지 않았다
+- [ ] **management port 분리** — `/actuator/prometheus` 가 인증 뒤에 있어 스크랩이 401. probe 포트까지 함께 옮겨야 한다
 
 ### 참고 (직접 쓰지는 않지만 이해가 필요한 것)
 

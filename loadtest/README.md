@@ -2,6 +2,10 @@
 
 > 게이트웨이(BFF)와 IAM 을 대상으로 한 부하 시나리오.
 > **시나리오 정의와 측정 결과는 [`SCENARIOS.md`](./SCENARIOS.md)** 에 있다. 이 문서는 실행 방법이다.
+>
+> k6 를 처음 쓴다면 [`docs/learning/29`](../docs/learning/29-k6-load-testing-basics.md) 를 먼저 본다 —
+> 생명주기·executor·판정(check vs threshold)을 정리했다. 이 스크립트들의 설정이 왜 그렇게 되어
+> 있는지가 거기서 갈린다.
 
 ## 목적(Goal)
 
