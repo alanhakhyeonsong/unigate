@@ -1,0 +1,10 @@
+apiVersion: v2
+name: unigate-common
+description: |
+  unigate 배포 대상 4개(gateway · iam · demo-be · demo-fe)가 공유하는 library chart.
+  렌더 가능한 리소스를 직접 갖지 않고, 앱 차트가 include 로 끌어다 쓰는 정의만 담는다.
+# ⚠️ type: library — 이 차트는 `helm install` 대상이 아니다.
+#    application 으로 두면 실수로 단독 설치가 가능해지고, 그때 아무 리소스도 만들지 않아
+#    "설치는 성공했는데 아무것도 안 뜬다" 는 혼란이 생긴다.
+type: library
+version: 0.1.0

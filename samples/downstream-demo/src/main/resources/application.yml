@@ -23,6 +23,23 @@ unigate:
 
 server:
   port: 8081
+  # k8s 롤링 업데이트 중 in-flight 요청을 끊지 않는다. Helm 차트의
+  # terminationGracePeriodSeconds · preStop sleep 과 짝을 이룬다.
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # health 만 노출한다. env·configprops 는 설정값을, metrics 는 경로 분포를 흘린다.
+        include: health
+  endpoint:
+    health:
+      probes:
+        # liveness/readiness 를 분리해 노출한다 — 둘을 같은 경로로 두면
+        # 기동 중 일시적 DOWN 이 재시작으로 이어진다.
+        enabled: true
+      show-details: never
 
 logging:
   level:

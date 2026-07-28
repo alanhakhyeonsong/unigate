@@ -1,0 +1,34 @@
+# alpha 오버레이 — 비민감 값만.
+#
+# 배포: deploy/deploy-alpha.sh demo-fe
+#
+# ⚠️ 이 FE 를 올리면 **게이트웨이 쪽에 두 가지가 함께 필요하다.** 하나라도 빠지면
+#    로그인은 되는데 화면이 비거나, 로그아웃 후 착지에 실패한다:
+#      1) GW 의 `UNIGATE_CORS_ALLOWED_ORIGINS` 에 이 콘솔의 origin 이 **정확히** 들어갈 것
+#         (스킴+호스트, 끝 슬래시 없이 — 문자열이 다르면 조용히 실패한다)
+#      2) Keycloak client 의 post-logout redirect 에 이 주소가 등록될 것
+#         (`setup-realm.sh --env alpha --console-host <fe-host>`)
+
+replicaCount: 1
+
+imagePullSecrets:
+  - name: harbor-pull
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  hosts:
+    # host 는 --set 으로 주입한다.
+    - host: ""
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: ssl-common
+      hosts: []
+
+env:
+  # 게이트웨이 origin. --set 으로 주입한다.
+  API_BASE_URL: ""

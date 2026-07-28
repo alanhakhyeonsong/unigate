@@ -77,7 +77,12 @@ dependencies {
 tasks {
   named<BootJar>("bootJar").configure {
     enabled = true
-    archiveFileName.set("iam.jar")
+    // ⚠️ 모듈별로 잔 이름을 다르게 두지 않는다. `docker/server.dockerfile` 이
+    // `${MODULE_NAME}/build/libs/app.jar` 를 COPY 하고 `.dockerignore` 화이트리스트도
+    // `app.jar` 만 허용하므로, 이름이 갈리는 순간 **빌드 컨텍스트에서 아예 제외되어**
+    // Dockerfile 만 고쳐서는 해결되지 않는다.
+    // 모듈 구분은 이미 이미지 태그와 Helm 릴리즈가 한다.
+    archiveFileName.set("app.jar")
   }
 
   named<Jar>("jar").configure {

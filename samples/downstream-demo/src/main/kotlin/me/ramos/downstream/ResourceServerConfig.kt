@@ -42,6 +42,12 @@ class ResourceServerConfig(
                 // 검증용 origin 확보 전용 (PublicPingController KDoc 참조). 자원이 아니다.
                 authorize("/public/**", permitAll)
 
+                // k8s probe 용. kubelet 은 토큰을 갖지 않으므로 열어야 파드가 뜬다.
+                // ⚠️ health 만 연다 — `/actuator/**` 를 통째로 열면 env·metrics 까지 따라 열려
+                //    설정값과 경로 분포가 인증 없이 노출된다(게이트웨이·IAM 과 같은 판단).
+                authorize("/actuator/health", permitAll)
+                authorize("/actuator/health/**", permitAll)
+
                 // 진단용. 테넌트와 무관하게 "무엇이 도착했는가" 를 봐야 하므로 예외로 둔다.
                 // ⚠️ 이 한 줄이 곧 "여기는 테넌트 격리가 없다" 는 선언이다 — P9g 에서 위조
                 //    헤더가 그대로 통과한 바로 그 경로다. 예외는 이렇게 눈에 보여야 한다.

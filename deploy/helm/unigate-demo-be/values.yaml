@@ -1,0 +1,147 @@
+# unigate-demo-be 기본값 (환경 공통).
+#
+# ⚠️ **샘플이다.** `samples/README.md` §3 에 일부러 취약하게 둔 엔드포인트 목록이 있다
+#    (`/echo` · `/legacy/orders`). 레퍼런스 구현으로 복사하지 않는다.
+# ⚠️ ingress 를 갖지 않는다. GW 경유로만 도달해야 게이트웨이의 테넌트 게이트를 거친다.
+#    직접 노출하면 P9g 에서 실측한 "게이트 우회" 경로가 인터넷에 열린다.
+
+global:
+  namespace: ""
+  image:
+    repository: ""
+    tag: ""
+    pullPolicy: IfNotPresent
+
+replicaCount: 1
+revisionHistoryLimit: 3
+
+terminationGracePeriodSeconds: 45
+lifecycle:
+  preStop:
+    exec:
+      command: ["sh", "-c", "sleep 5"]
+
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automount: null
+
+podAnnotations: {}
+podLabels:
+  app: unigate-demo-be
+
+podSecurityContext:
+  fsGroup: 1001
+  fsGroupChangePolicy: OnRootMismatch
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  privileged: false
+  readOnlyRootFilesystem: true
+  runAsGroup: 1001
+  runAsNonRoot: true
+  runAsUser: 1001
+  seccompProfile:
+    type: RuntimeDefault
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8081
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi
+
+# ⚠️ 이 앱은 **부팅 시 Keycloak 을 조회한다.**
+#    `ResourceServerConfig.jwtDecoder()` 가 `JwtDecoders.fromIssuerLocation` 을 쓰는데,
+#    이건 discovery/JWKS 를 그 자리에서 1회 가져온다(지연 초기화가 아니다).
+#    Keycloak 이 안 떠 있거나 네트워크가 막히면 **기동 자체가 실패**하고 CrashLoopBackOff 가 된다.
+#    게이트웨이·IAM 은 지연 JWKS 라 이 특성이 없다 — 셋을 같은 것으로 보면 오진한다.
+startupProbe:
+  httpGet:
+    path: /actuator/health/readiness
+    port: http
+  initialDelaySeconds: 20
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 30
+livenessProbe:
+  httpGet:
+    path: /actuator/health/liveness
+    port: http
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+readinessProbe:
+  httpGet:
+    path: /actuator/health/readiness
+    port: http
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# 샘플은 부하 대상이 아니다 — 부하테스트의 관심사는 GW·IAM 이고, 여기까지 스케일을 걸면
+# 무엇이 병목인지 흐려진다. 고정 replica 로 둔다.
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 1
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: null
+  behavior: {}
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  maxUnavailable: null
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts: []
+  tls: []
+
+javaOpts: "-Xms256m -Xmx640m"
+
+otelAgent:
+  enabled: false
+
+tmpVolume:
+  enabled: true
+  mountPath: /app/tmp
+  sizeLimit: 512Mi
+  persistentVolumeClaim:
+    enabled: false
+
+# KEYCLOAK_ISSUER_URI 가 실제 호스트를 담으므로 Secret 으로 간다(비밀은 아니지만 좌표다).
+envFromSecret: true
+existingSecret: ""
+
+config:
+  enabled: false
+
+env:
+  # 이 샘플에는 alpha 프로필 파일이 없다 — 설정이 전부 환경변수라 프로필을 나눌 이유가 없었다.
+  # 그래도 entrypoint 가 프로필 지정을 강제하므로 값을 준다(docker-entrypoint.sh).
+  SPRING_PROFILES_ACTIVE: default
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

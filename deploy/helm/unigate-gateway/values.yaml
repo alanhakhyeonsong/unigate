@@ -1,0 +1,148 @@
+# unigate-gateway 기본값 (환경 공통).
+# 환경 오버레이: values-alpha.yaml. 실제 좌표·비밀은 여기에도 저기에도 두지 않는다(CLAUDE.md §8).
+
+global:
+  # namespace 는 실제 좌표라 커밋 대상에 두지 않는다. 배포 스크립트가 --set 으로 주입한다.
+  namespace: ""
+  image:
+    repository: ""
+    tag: ""
+    pullPolicy: IfNotPresent
+
+replicaCount: 1
+revisionHistoryLimit: 3
+
+# in-flight 요청을 흘려보낸 뒤 종료한다. preStop sleep 은 endpoint 전파 지연을 흡수하는 용도로,
+# 이게 없으면 파드가 죽은 뒤에도 ingress 가 잠시 그리로 트래픽을 보내 502 가 섞인다.
+terminationGracePeriodSeconds: 45
+lifecycle:
+  preStop:
+    exec:
+      command: ["sh", "-c", "sleep 5"]
+
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automount: null
+
+podAnnotations: {}
+podLabels:
+  app: unigate-gateway
+
+podSecurityContext:
+  fsGroup: 1001
+  fsGroupChangePolicy: OnRootMismatch
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  privileged: false
+  readOnlyRootFilesystem: true
+  runAsGroup: 1001
+  runAsNonRoot: true
+  runAsUser: 1001
+  seccompProfile:
+    type: RuntimeDefault
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 1Gi
+  limits:
+    cpu: 1000m
+    memory: 2Gi
+
+# ⚠️ readiness 그룹에 redis 가 포함돼 있다(application.yml).
+#    Valkey 좌표가 틀리면 파드는 뜨지만 **영원히 NotReady** 다 — "이미지가 안 뜬다" 로 오진하기 쉽다.
+#    그때는 kubectl exec 로 /actuator/health/readiness 를 직접 찍어 어느 컴포넌트가 DOWN 인지 본다.
+startupProbe:
+  httpGet:
+    path: /actuator/health/readiness
+    port: http
+  initialDelaySeconds: 20
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 30
+livenessProbe:
+  httpGet:
+    path: /actuator/health/liveness
+    port: http
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+readinessProbe:
+  httpGet:
+    path: /actuator/health/readiness
+    port: http
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 1
+  targetCPUUtilizationPercentage: 70
+  # JVM 힙은 GC 전까지 반납되지 않아 사용률이 부하와 어긋난다 → 메모리 기준은 쓰지 않는다.
+  targetMemoryUtilizationPercentage: null
+  behavior: {}
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  maxUnavailable: null
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts: []
+  tls: []
+
+javaOpts: "-Xms512m -Xmx1280m"
+
+otelAgent:
+  enabled: false
+
+# ⚠️ emptyDir 이다(PVC 아님). `-Djava.io.tmpdir` 용이라 재시작 사이에 남을 필요가 없고,
+#    PVC(ReadWriteOnce)로 두면 스케일아웃 시 두 번째 파드가 다른 노드에서 Pending 에 걸린다.
+tmpVolume:
+  enabled: true
+  mountPath: /app/tmp
+  sizeLimit: 1Gi
+  persistentVolumeClaim:
+    enabled: false
+
+# 차트 밖에서 만든 Secret 을 envFrom 으로 읽는다.
+#
+# ⚠️ 이 차트는 Secret 을 **만들지 않는다.** values 에 비밀을 담으면 ① public 리모트에
+#    커밋될 위험이 상존하고 ② 커밋을 피해도 Helm 이 릴리즈 values 를 클러스터에 저장해
+#    `helm get values -a` 로 평문이 그대로 나온다. 두 경로를 모두 막으려면 비밀이
+#    values 를 거치지 않아야 한다. 생성은 deploy/deploy-alpha.sh 가 kubectl 로 한다.
+envFromSecret: true
+existingSecret: ""
+
+config:
+  enabled: false
+
+env:
+  SPRING_PROFILES_ACTIVE: alpha
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

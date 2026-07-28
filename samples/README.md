@@ -50,7 +50,42 @@ source ./keycloak.secret.env          # Keycloak 좌표 — 기본값이 없다(
 | `downstream-demo` `/public/ping` | 인증 없이 200 | 브라우저에서 다운스트림 origin 을 얻기 위한 **검증 도구**. 자원이 아니다 |
 | `frontend-demo` 진단 화면 | 위조 헤더를 **일부러** 실어 보낸다 | 게이트웨이가 무엇을 지우고 무엇을 넣는지 눈으로 본다 |
 
-## 4. 관련 문서
+## 4. alpha 배포
+
+두 샘플 모두 **배포 대상**이다. 게이트웨이만 띄우면 토큰 릴레이·audience 검증·트레이싱 전파를
+실제 클러스터에서 확인할 대상이 없기 때문이다.
+
+| 앱 | 차트 | 이미지 | ingress |
+|---|---|---|---|
+| `downstream-demo` | `deploy/helm/unigate-demo-be` | `docker/server.dockerfile` (`MODULE_NAME=samples/downstream-demo`) | ❌ GW 경유만 |
+| `frontend-demo` | `deploy/helm/unigate-demo-fe` | `samples/frontend-demo/Dockerfile` (nginx) | ✅ 콘솔 host |
+
+```bash
+deploy/deploy-alpha.sh demo-be
+deploy/deploy-alpha.sh demo-fe
+```
+
+### FE 는 게이트웨이 주소를 **런타임에** 받는다
+
+로컬에서는 `.env.alpha` 가 빌드 시점에 `VITE_API_BASE_URL` 을 번들에 박지만, 배포 이미지는
+주소를 모르는 채로 빌드된다. 컨테이너 기동 시 `docker/entrypoint.sh` 가 `API_BASE_URL` 을
+`/tmp/config.js` 로 써서 브라우저에 전달하고, `src/api/env.ts` 가 그 값을 먼저 본다.
+
+이렇게 하지 않으면 환경마다 이미지를 다시 구워야 하고 "같은 이미지를 승격한다" 는 원칙이 깨진다.
+
+```bash
+# 로컬에서 배포 이미지를 그대로 재현해 보려면 (k8s 와 같은 제약 조건으로)
+docker build -f samples/frontend-demo/Dockerfile -t unigate-demo-fe:local samples/frontend-demo
+docker run --rm -p 18080:8080 --read-only --tmpfs /tmp --user 101:101 \
+  -e API_BASE_URL=https://<gw-host> unigate-demo-fe:local
+curl -s localhost:18080/config.js
+```
+
+> ⚠️ **다운스트림 샘플은 부팅 시 Keycloak 을 조회한다.** `JwtDecoders.fromIssuerLocation` 이
+> discovery/JWKS 를 그 자리에서 가져오므로, Keycloak 이 안 떠 있으면 **기동 자체가 실패**하고
+> CrashLoopBackOff 가 된다. 게이트웨이·IAM 은 지연 JWKS 라 이 특성이 없다 — 셋을 같게 보면 오진한다.
+
+## 5. 관련 문서
 
 - `docs/learning/23` — 게이트웨이의 coarse 인가와 "제거 후 재주입"
 - `docs/learning/24` — 잊으면 닫히는 기본값(다운스트림 테넌트 격리)

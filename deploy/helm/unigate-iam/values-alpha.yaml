@@ -1,0 +1,52 @@
+# alpha 오버레이 — 비민감 값만.
+#
+# 배포: deploy/deploy-alpha.sh iam
+# ⚠️ 배포 순서는 **IAM 먼저, GW 나중**이다. GW 가 IAM_URI 로 IAM Service 를 참조한다.
+#    순서를 바꿔도 GW 는 뜨지만 IAM 라우트가 CB open 으로 503 을 낸다.
+
+# ⚠️ 원래 2였다. 클러스터 포화로 1로 내렸다 — gateway 가 들어갈 자리를 만들어야 했다.
+#    (2026-07-28 실측: worker 3대 CPU 94~99% · 메모리 84~97%)
+#
+# 다중 인스턴스가 **안전하다는 것 자체는 이미 확인됐다.** replica 2 로 떴을 때
+# 두 파드가 동시에 기동했는데 Flyway 마이그레이션은 한 번만 적용됐다:
+#     zghkr → "Successfully applied 6 migration"
+#     vnb7c → "Schema \"public\" is up to date"
+# 즉 DB 잠금 직렬화가 실물로 확인됐다. outbox 의 SKIP LOCKED 동시성(P8d)과 함께,
+# 노드 여유가 생기면 replica 를 되돌려도 된다.
+replicaCount: 1
+
+imagePullSecrets:
+  - name: harbor-pull
+
+# gateway 와 같은 이유로 낮췄다. 상세 근거는 unigate-gateway/values-alpha.yaml 주석 참조.
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    cpu: 1000m
+    memory: 1536Mi
+
+javaOpts: "-Xms256m -Xmx1024m"
+
+# 스케일아웃할 자리가 없어 끈다. 켜두면 Pending 파드만 쌓인다.
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: null
+  behavior: {}
+
+podDisruptionBudget:
+  enabled: false
+
+# ingress 없음 — 위 values.yaml 머리말 참조. GW 프록시로만 도달한다.
+ingress:
+  enabled: false
+
+env:
+  SPRING_PROFILES_ACTIVE: alpha
+  # 스케줄러가 도는 인스턴스를 줄이고 싶다면 여기서 끈다(기본 true).
+  # 지금은 모든 인스턴스가 워커를 돌린다 — SKIP LOCKED 라 안전하고, 처리량도 함께 늘어난다.
+  IAM_OUTBOX_POLLING_ENABLED: "true"

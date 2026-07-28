@@ -1,0 +1,13 @@
+apiVersion: v2
+name: unigate-gateway
+description: unigate 인증 게이트웨이(BFF · Spring Cloud Gateway · WebFlux)
+type: application
+version: 0.1.0
+appVersion: "0.0.1"
+
+dependencies:
+  # 로컬 경로 의존이라 `helm dependency update` 가 charts/ 아래에 tgz 를 만든다.
+  # 배포 스크립트가 대신 실행하므로 수동으로 챙길 필요는 없다(charts/ 는 gitignore).
+  - name: unigate-common
+    version: 0.1.0
+    repository: "file://../unigate-common"

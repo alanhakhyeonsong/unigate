@@ -44,8 +44,15 @@ unigate:
   cors:
     allowed-origins: ${UNIGATE_CORS_ALLOWED_ORIGINS:}
 
-  # 다운스트림·IAM 라우트 대상. **기본값이 localhost 라 주입을 빠뜨려도 죽지 않는다** —
-  # alpha 에서 비면 게이트웨이가 자기 파드의 localhost 를 찌르고 502 가 난다. 반드시 주입한다.
+  # 다운스트림·IAM 라우트 대상.
+  #
+  # ⚠️ 공통 `application.yml` 에는 localhost fallback 이 있지만, **여기서 fallback 없이
+  # 재선언해 그것을 덮는다.** 프로파일별 파일이 이기므로 alpha 에서는 주입이 빠지면
+  # placeholder 미해결로 **기동이 실패한다** — 자기 파드의 localhost 를 찌르며 502 를 내는
+  # 것보다 빨리 죽는 편이 낫다(`application-alpha.yml`(iam) 과 같은 판단).
+  #
+  # k8s 에서는 **같은 네임스페이스의 짧은 Service 이름**을 주입한다(`http://unigate-iam-svc`).
+  # FQDN 을 쓰면 네임스페이스가 값에 박혀 실제 좌표가 배포 파일에 남는다.
   downstream:
     demo-uri: ${DOWNSTREAM_DEMO_URI}
   iam:

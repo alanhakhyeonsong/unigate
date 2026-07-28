@@ -1,0 +1,147 @@
+# unigate-demo-fe 기본값 (환경 공통).
+#
+# ⚠️ **이 FE 는 Keycloak client 를 갖지 않는다.** 토큰은 게이트웨이 세션 안에만 있고
+#    브라우저는 세션 쿠키만 받는다(BFF). 그래서 여기 주입할 비밀이 하나도 없다 —
+#    `envFromSecret: false` 는 누락이 아니라 구조의 결과다.
+
+global:
+  namespace: ""
+  image:
+    repository: ""
+    tag: ""
+    pullPolicy: IfNotPresent
+
+replicaCount: 1
+revisionHistoryLimit: 3
+
+terminationGracePeriodSeconds: 30
+lifecycle:
+  preStop:
+    exec:
+      command: ["sh", "-c", "sleep 3"]
+
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+imagePullSecrets: []
+
+serviceAccount:
+  create: false
+  name: ""
+  annotations: {}
+  automount: false
+
+podAnnotations: {}
+podLabels:
+  app: unigate-demo-fe
+
+# ⚠️ UID 가 1001 이 아니라 **101** 이다. nginxinc/nginx-unprivileged 이미지의 nginx 유저가
+#    101 이고, 파일 소유자와 실행 UID 가 어긋나면 정적 파일을 읽지 못해 403 이 난다.
+#    JVM 앱 차트(1001)를 그대로 복사하면 걸리는 자리다.
+podSecurityContext:
+  fsGroup: 101
+  fsGroupChangePolicy: OnRootMismatch
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  privileged: false
+  readOnlyRootFilesystem: true
+  runAsGroup: 101
+  runAsNonRoot: true
+  runAsUser: 101
+  seccompProfile:
+    type: RuntimeDefault
+
+service:
+  type: ClusterIP
+  port: 80
+  # nginx-unprivileged 기본 포트. 비특권 프로세스는 1024 미만을 bind 할 수 없어 80 을 쓸 수 없다.
+  targetPort: 8080
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+# nginx 전용 경량 probe. `/` 를 쓰면 SPA fallback 이 무엇이든 200 으로 돌려주어
+# "앱이 살아있다" 와 "fallback 이 404 를 삼켰다" 가 구분되지 않는다.
+startupProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 3
+  periodSeconds: 5
+  failureThreshold: 12
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  periodSeconds: 30
+  timeoutSeconds: 3
+  failureThreshold: 3
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 1
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: null
+  behavior: {}
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  maxUnavailable: null
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts: []
+  tls: []
+
+# JVM 앱이 아니다 — JAVA_OPTS 를 렌더하지 않도록 비운다.
+javaOpts: ""
+
+otelAgent:
+  enabled: false
+
+# ⚠️ **끄면 파드가 뜨지 않는다.** readOnlyRootFilesystem 이라 nginx 가 pid·임시 파일·
+#    런타임 config(/tmp/config.js)를 쓸 곳이 사라진다. JVM 앱에서는 tmp 가 편의였지만
+#    여기서는 **필수**다.
+tmpVolume:
+  enabled: true
+  mountPath: /tmp
+  sizeLimit: 64Mi
+  persistentVolumeClaim:
+    enabled: false
+
+envFromSecret: false
+existingSecret: ""
+
+config:
+  enabled: false
+
+env:
+  # 게이트웨이 origin. entrypoint 가 /tmp/config.js 로 써서 브라우저에 전달한다.
+  # 실제 호스트라 여기 값을 두지 않고 배포 스크립트가 --set 으로 주입한다(CLAUDE.md §8).
+  API_BASE_URL: ""
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

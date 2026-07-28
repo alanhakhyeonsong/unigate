@@ -1,0 +1,11 @@
+apiVersion: v2
+name: unigate-demo-fe
+description: 샘플 FE 검증 콘솔 (React SPA · nginx 정적 서빙)
+type: application
+version: 0.1.0
+appVersion: "0.0.1"
+
+dependencies:
+  - name: unigate-common
+    version: 0.1.0
+    repository: "file://../unigate-common"

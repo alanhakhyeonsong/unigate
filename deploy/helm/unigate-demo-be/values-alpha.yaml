@@ -1,0 +1,27 @@
+# alpha 오버레이 — 비민감 값만.
+#
+# 배포: deploy/deploy-alpha.sh demo-be
+# 배포 순서상 **GW 보다 먼저** 올린다. GW 의 DOWNSTREAM_DEMO_URI 가 이 Service 를 가리킨다.
+
+replicaCount: 1
+
+imagePullSecrets:
+  - name: harbor-pull
+
+# 클러스터가 포화 상태라 검증용 샘플은 최소한만 요청한다.
+# (상세 근거는 unigate-gateway/values-alpha.yaml 주석)
+resources:
+  requests:
+    cpu: 50m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi
+
+javaOpts: "-Xms128m -Xmx512m"
+
+ingress:
+  enabled: false
+
+env:
+  SPRING_PROFILES_ACTIVE: default

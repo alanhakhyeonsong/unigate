@@ -7,6 +7,12 @@
   </head>
   <body>
     <div id="root"></div>
+    <!--
+      ⚠️ `type="module"` 이 아니다. module 스크립트는 defer 처럼 동작해 앱 번들과 실행 순서가
+      보장되지 않는다. 일반 스크립트로 두어야 앱이 읽기 전에 window 설정이 반드시 채워진다.
+      캐시되면 배포 후에도 옛 주소를 보므로 nginx 가 이 경로만 no-store 로 응답한다.
+    -->
+    <script src="/config.js"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -54,7 +54,10 @@ unigate/
 │       └── config/
 ├── docker/               # server.dockerfile, entrypoint, valkey/sentinel.conf
 ├── docker-compose.yml    # 로컬: postgres + valkey + valkey-sentinel
-├── deploy/               # Helm 차트(alpha) + 로컬 직접 배포 스크립트
+├── deploy/               # 모듈별 Helm 차트(library chart 공유) + 배포 스크립트
+│   ├── helm/             #   unigate-common(library) + 앱 차트 4개
+│   └── env/              #   좌표·비밀 (.env.example 만 커밋)
+├── loadtest/             # k6 부하 시나리오 (rate limit 경계 · 용량/HPA)
 ├── scripts/keycloak/     # realm 구성 자동화(setup-realm.sh)
 ├── samples/              # 검증용 샘플 앱 — 아래 참고 (독립 빌드, ./gradlew build 와 무관)
 │   ├── downstream-demo/  #   샘플 다운스트림 BE (Resource Server, :8081)
@@ -134,16 +137,52 @@ local `test` / alpha `unigate`. realm 구성 절차와 자동화 스크립트는
 
 ## Alpha 배포 (로컬 → 공유 k8s 직접 배포)
 
-CI/CD 파이프라인 없이 로컬에서 직접 배포한다.
+CI/CD 파이프라인 없이 로컬에서 직접 배포한다. 배포 대상은 **앱 4개**다.
 
 ```bash
 # 사전: 컨테이너 레지스트리 로그인, kubectl 컨텍스트 선택,
-#       deploy/helm/unigate/values-alpha.secret.yaml 작성(커밋 금지)
-./deploy/deploy-alpha.sh
+#       deploy/env/alpha.coord.env 와 앱별 alpha.<app>.secret.env 작성(전부 커밋 금지)
+cp deploy/env/alpha.coord.env.example deploy/env/alpha.coord.env      # 좌표
+cp deploy/env/alpha.gateway.secret.env.example deploy/env/alpha.gateway.secret.env
+
+./deploy/deploy-alpha.sh --dry-run all    # 먼저 렌더만 확인
+./deploy/deploy-alpha.sh all              # iam → demo-be → gateway → demo-fe 순
+./deploy/deploy-alpha.sh gateway          # 하나만 재배포
 ```
 
-> ⚠️ 배포 구성은 **Phase 6에서 재조정 예정**이다. 현재 차트는 게이트웨이 단일 앱 전제로 작성돼 있고,
-> Phase 8 이후 앱이 둘(gateway·iam), DB도 둘(`unigate`·`unigate_iam`)로 늘었다.
+### 차트 구조 — library chart 공유
+
+```
+deploy/helm/
+├── unigate-common/     # type: library — Deployment·Service·Ingress·HPA·PDB 정의 (템플릿 1벌)
+├── unigate-gateway/    # BFF · WebFlux         :8080  ingress ✅  HPA ✅
+├── unigate-iam/        # MVC + JPA + VT        :8090  ingress ❌  HPA ✅
+├── unigate-demo-be/    # 샘플 다운스트림        :8081  ingress ❌
+└── unigate-demo-fe/    # 샘플 콘솔 (nginx)      :8080  ingress ✅
+```
+
+앱 차트의 `templates/` 에는 `{{ include "unigate-common.all" . }}` 한 줄만 있고, 앱별 차이는
+전부 values 로 낸다. 템플릿을 앱마다 복제하면 그 복제본들이 서서히 갈라지기 때문이다.
+
+### 비밀은 Helm values 를 거치지 않는다
+
+차트는 Secret 을 **만들지 않는다.** 배포 스크립트가 gitignore 된 `.env` 파일로
+`kubectl create secret` 을 만들고 차트는 이름으로 참조만 한다(`envFrom`).
+
+> **왜 이렇게까지 하나:** Helm 은 릴리즈 values 를 클러스터의 `sh.helm.release.v1.*` Secret 에
+> 통째로 보관한다. values 에 비밀을 넣으면 git 을 막아도 `helm get values -a` 로 평문이 그대로
+> 나온다 — 네임스페이스 read 권한자 전원에게 노출된다. 두 경로를 모두 막으려면 비밀이 values 를
+> 거치지 않아야 한다.
+
+실제 좌표(네임스페이스·호스트·레지스트리)도 커밋 대상 values 에 두지 않고, 배포 시
+임시 values 파일로 주입한다. 클러스터 내부 통신은 **같은 네임스페이스의 짧은 Service 이름**
+(`http://unigate-iam-svc`)을 써서 네임스페이스가 값에 박히지 않게 한다.
+
+### 부하테스트
+
+`loadtest/` 에 k6 시나리오가 있다. **시나리오가 둘로 나뉘어 있고, 이유가 있다** —
+게이트웨이의 rate limit 키가 `sub` 라 운영 설정 그대로 부하를 주면 429 만 나오고 HPA 는
+반응하지 않는다. 자세한 것은 [`loadtest/README.md`](loadtest/README.md).
 
 ## 문서
 

@@ -1,0 +1,60 @@
+# 부하테스트 전용 오버레이 — **운영 설정이 아니다.**
+#
+# 사용:
+#   deploy/deploy-alpha.sh --overlay deploy/helm/unigate-gateway/values-alpha-loadtest.yaml gateway
+#   (테스트가 끝나면 오버레이 없이 다시 배포해 원래 값으로 되돌린다)
+#
+# ── 왜 이 파일이 필요한가 ──────────────────────────────────────────────────────
+# 게이트웨이의 rate limit 키는 인증 시 `sub` 다. 즉 부하를 아무리 올려도 사용자 하나당
+# 초당 5 요청에서 끊기고, 나머지는 429 로 튕겨 **애플리케이션에 도달하지 않는다.**
+# 그 상태로는 CPU 가 오르지 않아 HPA 가 반응하지 않고, 측정되는 것은 애플리케이션 용량이
+# 아니라 Valkey 토큰버킷의 처리량뿐이다.
+#
+# 그래서 "보호 장치가 어디서 끊는가"(시나리오 A)와 "앱이 얼마를 처리하는가"(시나리오 B)를
+# 나누고, 후자에서만 한도를 올린다.
+#
+# ⚠️ 이 오버레이로 배포된 동안 게이트웨이는 **사실상 무방비**다. 외부에 열려 있는 환경에서는
+#    테스트 창을 짧게 잡고 끝나면 즉시 되돌린다.
+
+env:
+  SPRING_PROFILES_ACTIVE: alpha
+  IAM_URI: "http://unigate-iam-svc"
+  DOWNSTREAM_DEMO_URI: "http://unigate-demo-be-svc"
+
+  # 전역 rate limit 완화 (기본: 5 / 10 / 1)
+  RATELIMIT_REPLENISH_RATE: "10000"
+  RATELIMIT_BURST_CAPACITY: "20000"
+  RATELIMIT_REQUESTED_TOKENS: "1"
+
+  # 가입 전용 버킷도 함께 올린다 — 가입 경로를 부하 대상에 넣을 경우를 위해서다.
+  RATELIMIT_REGISTER_REPLENISH_RATE: "1000"
+  RATELIMIT_REGISTER_BURST_CAPACITY: "5000"
+  RATELIMIT_REGISTER_REQUESTED_TOKENS: "1"
+
+  # 부하 중 트레이싱 100% 는 그 자체가 오버헤드이자 측정 왜곡이다.
+  # 낮춰서 앱 용량을 보되, traceId 상관관계가 필요한 검증은 이 프로파일로 하지 않는다.
+  TRACING_SAMPLING_PROBABILITY: "0.05"
+
+# 스케일 여지를 넓힌다. maxReplicas 가 낮으면 "용량 한계" 와 "HPA 상한" 이 구분되지 않는다.
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 60
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+        - type: Pods
+          value: 4
+          periodSeconds: 15
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 180
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
