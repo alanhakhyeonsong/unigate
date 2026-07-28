@@ -22,8 +22,10 @@
 | `docs/IAM_PLATFORM_DECISION.md` | IAM 플랫폼 확장 결정(Phase 8 착수 전 게이트) | ✅ |
 | `docs/KEYCLOAK_REALM_SETUP.md` | Keycloak realm 구성·검증·런북 | ✅ |
 | `docs/learning/` | **개인 학습 문서** (§2) | ✅ |
+| `loadtest/README.md` | k6 부하테스트 **실행 가이드** | ✅ |
+| `loadtest/SCENARIOS.md` | 시나리오 정의 + **측정 기록**(회차별) | ✅ |
 | `docs/plans/` | 작업용 계획·체크리스트 | ❌ `.gitignore` |
-| `samples/` | 샘플 다운스트림 BE + FE (§6) | ❌ `.gitignore` |
+| `samples/` | 샘플 다운스트림 BE + FE (§6) | ✅ (§6) |
 
 ---
 

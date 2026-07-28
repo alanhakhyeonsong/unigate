@@ -1,7 +1,7 @@
 import http from 'k6/http'
 import { check, sleep } from 'k6'
 import { Trend } from 'k6/metrics'
-import { login } from './lib/session.js'
+import { ensureSession } from './lib/session.js'
 
 /**
  * 시나리오 B — **용량 · HPA 측정** (rate limit 완화 프로파일)
@@ -73,11 +73,9 @@ export const options = {
 
 export default function () {
   // VU 번호로 사용자를 나눈다. __VU 는 1부터 시작한다.
+  // ensureSession 이 VU 당 한 번만 로그인하고 이후 iteration 에는 캐시를 심는다.
   const user = USERS[(__VU - 1) % USERS.length]
-
-  if (!__ITER) {
-    login(BASE_URL, user.username, user.password)
-  }
+  ensureSession(BASE_URL, user.username, user.password)
 
   const res = http.get(`${BASE_URL}${TARGET_PATH}`, {
     tags: { name: 'target' },
@@ -97,21 +95,45 @@ export default function () {
   sleep(0.5)
 }
 
+/**
+ * ⚠️ **handleSummary 를 정의하면 k6 의 기본 텍스트 요약이 통째로 대체된다.**
+ *
+ * 처음에 핵심 지표만 JSON 으로 뱉게 짰다가, threshold 판정과 checks 결과가 콘솔에서
+ * 사라져 "통과했는지 알 수 없는" 실행을 한 번 만들었다. 파일에는 남아 있어 복구는 됐지만,
+ * **판정이 보이지 않는 요약은 요약이 아니다.**
+ *
+ * 그래서 여기서 threshold 를 직접 렌더한다. 파일 저장은 그대로 두어
+ * HPA 관찰(kubectl) 기록과 나중에 대조할 수 있게 한다.
+ */
 export function handleSummary(data) {
-  // 요약을 파일로 남긴다. HPA 관찰(kubectl)과 시각을 맞춰 봐야 하므로,
-  // 콘솔에만 남기면 나중에 대조할 수 없다.
+  const m = data.metrics
+  const d = m.unigate_target_duration?.values ?? {}
+  const num = (v, unit) => (v === undefined ? 'n/a' : `${Math.round(v * 100) / 100}${unit ?? ''}`)
+
+  const lines = ['', '── 시나리오 B 요약 ──────────────────────────────────────']
+
+  // threshold 판정을 가장 위에 둔다. 이게 결론이다.
+  for (const [name, metric] of Object.entries(m)) {
+    for (const [expr, res] of Object.entries(metric.thresholds ?? {})) {
+      lines.push(`  ${res.ok ? '✓' : '✗'} ${name} ${expr}`)
+    }
+  }
+
+  lines.push(
+    '',
+    `  요청 수      : ${num(m.http_reqs?.values.count)} (${num(m.http_reqs?.values.rate)} req/s)`,
+    `  실패율       : ${num((m.http_req_failed?.values.rate ?? 0) * 100, '%')}`,
+    `  429 발생     : ${m['http_req_failed{status:429}']?.values.passes ?? 0}`,
+    `  지연         : avg=${num(d.avg, 'ms')} med=${num(d.med, 'ms')} p(95)=${num(d['p(95)'], 'ms')} max=${num(d.max, 'ms')}`,
+    `  checks       : ${m.checks?.values.passes ?? 0} 통과 / ${m.checks?.values.fails ?? 0} 실패`,
+    '────────────────────────────────────────────────────────',
+    '',
+  )
+
   return {
-    stdout: JSON.stringify(
-      {
-        p95_ms: data.metrics.unigate_target_duration?.values['p(95)'],
-        p99_ms: data.metrics.unigate_target_duration?.values['p(99)'],
-        requests: data.metrics.http_reqs?.values.count,
-        rps: data.metrics.http_reqs?.values.rate,
-        failed_rate: data.metrics.http_req_failed?.values.rate,
-      },
-      null,
-      2,
-    ),
+    stdout: lines.join('\n'),
+    // ⚠️ 이 디렉토리는 저장소에 있어야 한다. k6 는 없는 디렉토리를 만들지 않고
+    //    "could not open ..." 로 실패한다(실제로 한 번 겪었다).
     'loadtest/results/scenario-b-summary.json': JSON.stringify(data, null, 2),
   }
 }

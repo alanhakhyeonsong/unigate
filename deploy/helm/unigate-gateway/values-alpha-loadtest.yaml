@@ -35,11 +35,19 @@ env:
   # 낮춰서 앱 용량을 보되, traceId 상관관계가 필요한 검증은 이 프로파일로 하지 않는다.
   TRACING_SAMPLING_PROBABILITY: "0.05"
 
-# 스케일 여지를 넓힌다. maxReplicas 가 낮으면 "용량 한계" 와 "HPA 상한" 이 구분되지 않는다.
+# ⚠️ maxReplicas 는 **메모리에서 나온 수**다(2026-07-28 실측).
+#
+# 파드를 받을 수 있는 노드가 worker-node-1 하나뿐이고(나머지 둘은 CPU 예약이 꽉 찼다),
+# 그 노드의 메모리 여유가 2.33Gi 라 512Mi × 4 가 상한이다.
+# 이보다 크게 잡으면 늘어난 파드가 Pending 으로 쌓이기만 하고, 그 상태는 "용량 한계" 처럼
+# 보이지만 실제로는 **스케줄 실패**다 — 둘을 구분하려면 상한을 실제 수용량에 맞춰야 한다.
+#
+# 노드 여유가 늘면 이 값을 올린다. 다만 파드가 전부 같은 노드에 몰리므로
+# 노드 분산 효과는 이 구성으로 측정할 수 없다.
 autoscaling:
   enabled: true
   minReplicas: 2
-  maxReplicas: 10
+  maxReplicas: 4
   targetCPUUtilizationPercentage: 60
   behavior:
     scaleUp:

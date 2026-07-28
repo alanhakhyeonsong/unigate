@@ -77,7 +77,12 @@ deploy/env/*.env
 !deploy/env/*.env.example
 
 ### 부하테스트 결과 (실제 호스트가 담긴다) ###
-loadtest/results/
+# ⚠️ `loadtest/results/` 로 디렉토리째 무시하면 하위 `!.gitkeep` 예외가 먹지 않는다.
+#    (git 은 제외된 디렉토리 안을 아예 들여다보지 않는다.)
+#    디렉토리 자체는 커밋해야 한다 — k6 의 handleSummary 는 없는 디렉토리를 만들지 않고
+#    "could not open ..." 로 실패한다.
+loadtest/results/*
+!loadtest/results/.gitkeep
 
 ### Helm dependency 산출물 ###
 # `helm dependency update` 가 library chart 를 tgz 로 벤더링한다. 로컬 경로 의존이라
