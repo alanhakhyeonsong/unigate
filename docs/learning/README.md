@@ -38,6 +38,7 @@
 | [26](26-bff-spa-integration.md) | BFF 에 SPA 를 붙이며 배운 것 — 토큰이 없는 프론트엔드 | 9+ | 학습중 | FE 는 토큰을 모른다. 어려운 건 인증이 아니라 **origin·쿠키·"아직 반영 안 됨"** 이었다 |
 | [27](27-helm-library-chart-and-alpha-deploy.md) | 모듈별 Helm 차트와 실전 배포 | 6 | 학습중 | 비밀은 git 말고 **`helm get values -a`** 로도 샌다. 배포 오류는 레지스트리·인증·용량으로 위장한다 |
 | [28](28-k6-loadtest-silent-failures.md) | 부하테스트가 조용히 실패하는 법 | 6 | 학습중 | 429 가 0건이고 checks 가 100% 통과인데 아무것도 측정하지 않을 수 있다. **성공만 검사하면 실패가 침묵한다** |
+| [29](29-k6-load-testing-basics.md) | k6 실행 모델 — 생명주기 · executor · 판정 | 6 | 학습중 | 28 의 실패들이 전부 같은 뿌리였다. **check 는 실패해도 exit 0, threshold 만 exit 99** |
 
 상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
 
@@ -115,6 +116,9 @@
 - [x] **`connection attempt failed` ≠ `authentication failed`** — 전자는 TCP, 후자는 인증. 구분하면 조사 범위가 절반으로 준다 → [27](27-helm-library-chart-and-alpha-deploy.md) §5.2
 - [x] **성공만 검사하면 실패가 침묵한다** — checks 100% 통과인데 아무것도 측정하지 않은 회차 → [28](28-k6-loadtest-silent-failures.md) §5.1
 - [x] **k6 쿠키 jar 의 수명은 iteration** — VU 가 아니다. BFF 부하테스트에서 가장 틀리기 쉬운 곳 → [28](28-k6-loadtest-silent-failures.md) §3.2
+- [x] **check 와 threshold 는 다른 물건이다** — check 는 100% 실패해도 **exit 0**. 판정을 만드는 건 threshold 뿐 → [29](29-k6-load-testing-basics.md) §3.3 · §4.2
+- [x] **executor 는 "무엇을 고정할지" 를 고르는 것** — VU 기반은 용량, 도착률 기반은 정책 경계 → [29](29-k6-load-testing-basics.md) §3.4
+- [x] **VU 가 모자라면 부하가 조용히 줄어든다** — `dropped_iterations` 로만 보이고 종료코드는 0 → [29](29-k6-load-testing-basics.md) §4.3
 - [x] **request 는 스케줄링과 HPA 가 공유하는데 요구 방향이 반대다** — 낮추면 스케줄은 되고 HPA 는 과민해진다 → [28](28-k6-loadtest-silent-failures.md) §5.3
 - [ ] **최대 처리량과 병목 위치** — 이번 수치는 HPA 상한에 막힌 값이다. 노드 여유 확보 후 재측정 필요 → [28](28-k6-loadtest-silent-failures.md) §6
 - [ ] **429 를 받은 클라이언트의 재시도 정책** — 거절이 빠르다는 것까지만 봤다. backoff·`Retry-After` 는 정하지 않았다
