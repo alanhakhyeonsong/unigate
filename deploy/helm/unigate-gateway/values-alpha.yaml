@@ -1,0 +1,80 @@
+# alpha 오버레이 — 비민감 값만. 실제 좌표(namespace · ingress host · registry)는
+# 배포 스크립트가 gitignore 된 좌표 파일에서 읽어 --set 으로 주입한다.
+#
+# 배포: deploy/deploy-alpha.sh gateway
+
+replicaCount: 1
+
+imagePullSecrets:
+  - name: harbor-pull
+
+# ⚠️ 이 클러스터는 공용이고 **이미 포화 상태**다(2026-07-28 실측: worker 3대 CPU 94~99%,
+#    메모리 84~97%). requests 를 원안(250m/1Gi)대로 두면 파드가 Pending 에서 멈춘다:
+#      0/4 nodes are available: 1 unschedulable, 2 Insufficient cpu, 2 Insufficient memory
+#    그래서 스케줄이 되도록 요청을 낮췄다. limits 는 남겨 두어 필요할 때 쓸 수 있게 한다.
+#
+#    ⚠️ 대가: request 가 낮으면 QoS 가 Burstable 이라 노드가 압박받을 때 evict 대상이 되기 쉽고,
+#    부하 시 CPU throttling 이 실제 용량을 가릴 수 있다. **부하테스트 수치를 앱 성능으로 읽으려면
+#    노드 여유를 먼저 확보해야 한다.**
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    cpu: 1000m
+    memory: 1536Mi
+
+# 힙을 limit 안쪽으로 낮춘다. metaspace·스레드 스택·direct buffer 가 힙 밖에서 더 쓰므로
+# limit 과 힙을 같게 두면 OOMKill 이 난다.
+javaOpts: "-Xms256m -Xmx1024m"
+
+# ⚠️ HPA 를 **끈다.** 지금 클러스터에는 스케일아웃할 자리가 없어서, 켜두면 늘어난 파드가
+#    전부 Pending 으로 쌓이기만 하고 "왜 처리량이 안 오르지" 로 오진하게 된다.
+#    부하테스트 시에는 values-alpha-loadtest.yaml 오버레이로 켠다(노드 여유 확보가 선행).
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: null
+  behavior: {}
+
+# replica 1 에 minAvailable 1 을 걸면 노드 드레인이 영원히 막힌다.
+podDisruptionBudget:
+  enabled: false
+
+# ⚠️ prometheus.io/scrape 를 켜지 않았다. 두 앱 모두 /actuator/prometheus 를
+#    **의도적으로 인증 뒤에** 두고 있어(SecurityConfig), 애노테이션만 달면 스크랩이 401 로 실패한다.
+#    "애노테이션이 있으니 수집되고 있다" 는 착각이 관측성 공백보다 나쁘다.
+#    해결하려면 management.server.port 를 분리하고 그 포트를 네트워크 정책으로 가려야 한다 —
+#    probe 포트까지 함께 옮겨야 해서 별도 작업으로 남긴다.
+podAnnotations: {}
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # BFF 라 브라우저 쿠키가 실린다. 실제 클라이언트 IP 가 rate limit 키(미인증 시)이므로
+    # forwarded 헤더를 신뢰해야 파드 IP 하나로 뭉뚱그려지지 않는다.
+    nginx.ingress.kubernetes.io/use-forwarded-headers: "true"
+    # 로그인 리다이렉트 왕복에서 Keycloak 세션 쿠키가 커질 수 있다.
+    nginx.ingress.kubernetes.io/proxy-buffer-size: "16k"
+  hosts:
+    # host 는 --set 으로 주입한다. 비어 있으면 렌더가 실패하도록 라이브러리에서 막아 뒀다.
+    - host: ""
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: ssl-common
+      hosts: []
+
+env:
+  SPRING_PROFILES_ACTIVE: alpha
+  # 클러스터 내부 통신은 **같은 네임스페이스의 짧은 이름**으로 지정한다.
+  # FQDN(`...svc.cluster.local`)을 쓰면 네임스페이스가 값에 박혀 실제 좌표가 커밋된다.
+  # 짧은 이름은 어느 네임스페이스에 배포하든 그대로 동작한다.
+  IAM_URI: "http://unigate-iam-svc"
+  DOWNSTREAM_DEMO_URI: "http://unigate-demo-be-svc"
+  # 나머지(KEYCLOAK_ISSUER_URI · DB · Valkey · CORS origin)는 전부 차트 밖 Secret 으로 들어간다.

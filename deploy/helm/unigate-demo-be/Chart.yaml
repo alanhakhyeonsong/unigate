@@ -1,0 +1,11 @@
+apiVersion: v2
+name: unigate-demo-be
+description: 샘플 다운스트림 BE (Resource Server) — 게이트웨이 동작 검증용
+type: application
+version: 0.1.0
+appVersion: "0.0.1"
+
+dependencies:
+  - name: unigate-common
+    version: 0.1.0
+    repository: "file://../unigate-common"

@@ -1,0 +1,140 @@
+# unigate-iam 기본값 (환경 공통).
+#
+# ⚠️ **ingress 를 갖지 않는다.** 외부 노출은 게이트웨이 하나뿐이고 IAM 은 GW 프록시 라우트로만
+#    도달한다(IAM_PLATFORM_DECISION.md D4 모델 A). IAM 을 직접 노출하면 GW 의 rate limit 과
+#    테넌트 게이트를 건너뛰는 경로가 생긴다 — P8f 실측에서 확인된 그대로다.
+
+global:
+  namespace: ""
+  image:
+    repository: ""
+    tag: ""
+    pullPolicy: IfNotPresent
+
+replicaCount: 1
+revisionHistoryLimit: 3
+
+terminationGracePeriodSeconds: 45
+lifecycle:
+  preStop:
+    exec:
+      command: ["sh", "-c", "sleep 5"]
+
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automount: null
+
+podAnnotations: {}
+podLabels:
+  app: unigate-iam
+
+podSecurityContext:
+  fsGroup: 1001
+  fsGroupChangePolicy: OnRootMismatch
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  privileged: false
+  readOnlyRootFilesystem: true
+  runAsGroup: 1001
+  runAsNonRoot: true
+  runAsUser: 1001
+  seccompProfile:
+    type: RuntimeDefault
+
+service:
+  type: ClusterIP
+  port: 80
+  # gateway(8080) 와 겹치지 않게 8090. 로컬에서 둘을 동시에 띄우는 전제 그대로다.
+  targetPort: 8090
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 1Gi
+  limits:
+    cpu: 1000m
+    memory: 2Gi
+
+# ⚠️ startupProbe 를 넉넉히 잡는다. 부팅 시 Flyway 마이그레이션(6개)과 JPA 스키마 검증이
+#    돌고, 첫 기동에서는 Keycloak service account 토큰 발급도 따라온다.
+#    짧게 잡으면 마이그레이션 도중 kubelet 이 죽여 **부분 적용 상태로 재시작 루프**에 빠질 수 있다.
+startupProbe:
+  httpGet:
+    path: /actuator/health/readiness
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 36
+livenessProbe:
+  httpGet:
+    path: /actuator/health/liveness
+    port: http
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+readinessProbe:
+  httpGet:
+    path: /actuator/health/readiness
+    port: http
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 1
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: null
+  behavior: {}
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  maxUnavailable: null
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts: []
+  tls: []
+
+javaOpts: "-Xms512m -Xmx1280m"
+
+otelAgent:
+  enabled: false
+
+tmpVolume:
+  enabled: true
+  mountPath: /app/tmp
+  sizeLimit: 1Gi
+  persistentVolumeClaim:
+    enabled: false
+
+envFromSecret: true
+existingSecret: ""
+
+config:
+  enabled: false
+
+env:
+  SPRING_PROFILES_ACTIVE: alpha
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -1,6 +1,9 @@
 # Whitelist approach: exclude everything, allow only what Docker needs
 *
 
-# Allow only the built jar and entrypoint script
-!*/build/libs/app.jar
+# Allow only the built jar and entrypoint script.
+# `**` 로 깊이를 열어 둔다 — 샘플 다운스트림은 `samples/downstream-demo/build/libs/` 라
+# 한 단계 더 깊고, `*/` 만 허용하면 그 jar 이 컨텍스트에 들어오지 못한다.
+# 잔 이름은 모든 모듈이 `app.jar` 로 통일돼 있다(build-logic 의 각 convention plugin).
+!**/build/libs/app.jar
 !docker/docker-entrypoint.sh

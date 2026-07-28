@@ -1,0 +1,11 @@
+apiVersion: v2
+name: unigate-iam
+description: unigate IAM 관리 평면(Servlet MVC + JPA + Virtual Thread)
+type: application
+version: 0.1.0
+appVersion: "0.0.1"
+
+dependencies:
+  - name: unigate-common
+    version: 0.1.0
+    repository: "file://../unigate-common"

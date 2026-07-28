@@ -1,0 +1,15 @@
+# FE 이미지 빌드 컨텍스트에서 제외할 것.
+#
+# node_modules 는 반드시 제외한다 — 호스트(macOS)에서 설치된 네이티브 바이너리가
+# 컨테이너(alpine/musl)에서 동작하지 않고, 컨텍스트 전송 시간도 크게 늘어난다.
+# 이미지 안에서는 `npm ci` 가 lockfile 로 다시 설치한다.
+node_modules
+dist
+.vite
+*.tsbuildinfo
+
+# 로컬 비밀·실제 좌표. 이미지에 들어가면 번들에 박힐 수 있다(CLAUDE.md §8).
+.env
+.env.local
+.env.*.local
+.env.alpha
