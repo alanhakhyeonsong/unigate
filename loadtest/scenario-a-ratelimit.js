@@ -1,7 +1,7 @@
 import http from 'k6/http'
 import { check, sleep } from 'k6'
 import { Counter, Rate, Trend } from 'k6/metrics'
-import { login } from './lib/session.js'
+import { ensureSession } from './lib/session.js'
 
 /**
  * 시나리오 A — **rate limit 경계 측정** (운영 설정 그대로)
@@ -65,16 +65,11 @@ export const options = {
   },
 }
 
-export function setup() {
-  return { baseUrl: BASE_URL }
-}
-
 export default function () {
-  // VU 마다 한 번만 로그인한다. 매 반복 로그인하면 Keycloak 이 병목이 되어
-  // 게이트웨이가 아니라 IdP 를 측정하게 된다.
-  if (!__ITER) {
-    login(BASE_URL, USERNAME, PASSWORD)
-  }
+  // ⚠️ VU 당 한 번 로그인하고, 매 iteration 마다 세션을 다시 심는다.
+  //    k6 쿠키 jar 는 iteration 단위로 초기화되므로 이게 없으면 두 번째 반복부터 전부 401 이고,
+  //    그런데도 요청·응답은 계속 오가서 "부하를 주고 있다" 고 착각하게 된다.
+  ensureSession(BASE_URL, USERNAME, PASSWORD)
 
   const res = http.get(`${BASE_URL}${TARGET_PATH}`, {
     tags: { name: 'target' },
@@ -93,6 +88,10 @@ export default function () {
   if (remaining !== undefined) remainingTokens.add(Number(remaining))
 
   check(res, {
+    // ⚠️ **이 검사가 가장 중요하다.** 세션이 끊기면 요청은 계속 나가고 응답도 오지만
+    //    백엔드에는 도달하지 않는다. 아래 두 검사는 401 에도 통과하므로 이것 없이는
+    //    "전부 통과했는데 실은 아무것도 측정하지 않은" 상태를 구분할 수 없다.
+    '인증이 유지된다 (401/302 아님)': (r) => r.status !== 401 && r.status !== 302,
     '429 는 본문 대신 헤더로 사유를 준다': (r) => r.status !== 429 || r.headers['X-Ratelimit-Remaining'] !== undefined,
     '5xx 가 아니다': (r) => r.status < 500,
   })

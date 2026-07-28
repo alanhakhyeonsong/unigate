@@ -74,6 +74,70 @@ export function login(baseUrl, username, password) {
 }
 
 /**
+ * 로그인 후 세션 쿠키 **값**을 꺼낸다.
+ *
+ * ⚠️ **k6 의 쿠키 jar 는 VU 가 아니라 iteration 단위로 초기화된다.**
+ * 그래서 "첫 반복에서만 로그인" 하는 흔한 패턴이 여기서는 통하지 않는다 —
+ * 두 번째 반복부터 쿠키가 사라져 모든 요청이 401 을 받는다.
+ *
+ * 더 나쁜 것은 **증상이 조용하다는 점**이다. 요청은 계속 나가고 응답도 오므로
+ * 처리량 그래프는 정상으로 보이는데, 실제로는 백엔드에 도달조차 못 한 요청을 세고 있다.
+ * (실제로 한 번 겪었다: 429 는 0건인데 성공은 20건, 나머지는 전부 인증 실패였다.)
+ *
+ * 그래서 `setup()` 에서 한 번 로그인해 쿠키 값을 뽑아 두고,
+ * 매 iteration 에서 `restoreSession()` 으로 jar 에 다시 심는다.
+ */
+export function extractSessionCookie(baseUrl) {
+  const jar = http.cookieJar()
+  const cookies = jar.cookiesForURL(baseUrl)
+  const value = cookies[SESSION_COOKIE] ? cookies[SESSION_COOKIE][0] : null
+  if (!value) {
+    fail(
+      `세션 쿠키(${SESSION_COOKIE})를 찾지 못했습니다. ` +
+        `로그인은 성공했지만 쿠키 이름이 다를 수 있습니다: ${Object.keys(cookies).join(', ')}`,
+    )
+  }
+  return value
+}
+
+/** 얻어 둔 세션 쿠키를 현재 iteration 의 jar 에 심는다. */
+export function restoreSession(baseUrl, sessionValue) {
+  http.cookieJar().set(baseUrl, SESSION_COOKIE, sessionValue)
+}
+
+// ── VU 스코프 세션 캐시 ────────────────────────────────────────────────────────
+// k6 는 VU 마다 모듈을 독립 인스턴스화하므로, 모듈 최상위 변수는 **VU 스코프**다.
+// iteration 을 넘어 유지되지만 VU 끼리는 섞이지 않는다 — 세션 보관에 딱 맞는 수명이다.
+let cachedSession = null
+let cachedUser = null
+
+/**
+ * 이 VU 의 세션을 보장한다. 처음이면 로그인하고, 이후에는 캐시된 쿠키를 다시 심는다.
+ *
+ * ## 왜 `setup()` 에서 한꺼번에 로그인하지 않는가
+ *
+ * 여러 사용자를 `setup()` 안에서 순차 로그인하면 **두 번째부터 실패한다.**
+ * 첫 로그인 뒤 Keycloak 의 SSO 세션 쿠키가 jar 에 남아, 다음 `/oauth2/authorization/keycloak`
+ * 요청이 로그인 폼을 거치지 않고 바로 통과해 버리기 때문이다. 그러면 폼을 찾지 못해
+ * `status=404` 로 끊긴다(실제로 겪었다).
+ *
+ * VU 별로 로그인하면 이 문제가 구조적으로 사라진다 — VU 마다 jar 가 독립이라
+ * 다른 사용자의 SSO 세션이 섞일 자리가 없다. 로그인 횟수는 VU 수만큼이지만
+ * **VU 당 한 번**이라 IdP 부하는 미미하다.
+ */
+export function ensureSession(baseUrl, username, password) {
+  if (cachedSession === null || cachedUser !== username) {
+    login(baseUrl, username, password)
+    cachedSession = extractSessionCookie(baseUrl)
+    cachedUser = username
+  }
+  restoreSession(baseUrl, cachedSession)
+}
+
+/** Spring Session 의 기본 쿠키 이름. */
+const SESSION_COOKIE = 'SESSION'
+
+/**
  * CSRF 토큰을 꺼낸다.
  *
  * 게이트웨이는 CSRF 를 **켜 둔다**(쿠키로 인증하므로 공격 표면이 실재한다).
