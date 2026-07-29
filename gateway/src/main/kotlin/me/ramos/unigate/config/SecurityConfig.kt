@@ -1,6 +1,7 @@
 package me.ramos.unigate.config
 
 import me.ramos.unigate.adapter.gatewayIn.CsrfTokenCookieFilter
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.core.env.Environment
@@ -49,6 +50,13 @@ import org.springframework.web.cors.reactive.CorsConfigurationSource
 @EnableWebFluxSecurity
 class SecurityConfig(
   private val environment: Environment,
+  /**
+   * FE 가 게이트웨이와 **다른 호스트**일 때의 FE 베이스 URI. 비어 있으면 same-origin 배포로 본다.
+   *
+   * 로그인 착지(`AuditingAuthenticationSuccessHandler`)와 로그아웃 착지(아래)가 **같은 값**을 봐야 한다.
+   * 한쪽만 FE 를 가리키면 "로그인하면 FE, 로그아웃하면 게이트웨이 404" 처럼 절반만 어긋난다.
+   */
+  @Value("\${unigate.frontend.base-uri:}") private val frontendBaseUri: String,
 ) {
   @Bean
   fun securityWebFilterChain(
@@ -247,12 +255,20 @@ class SecurityConfig(
    * - `{baseUrl}` 은 게이트웨이 자신의 베이스 URL(`http://localhost:8080`)로 치환된다. 뒤에 `/` 를
    *   붙여 Keycloak client 에 등록된 post-logout redirect URI(`http://localhost:8080/`)와 정확히 맞춘다.
    *   불일치하면 Keycloak 이 `invalid_redirect_uri` 로 거절한다(KEYCLOAK_REALM_SETUP.md §4.1).
+   *
+   * ## FE 가 다른 호스트면 `{baseUrl}/` 는 게이트웨이 루트다
+   * 로그인 착지와 **같은 함정**이다([AuditingAuthenticationSuccessHandler]). `{baseUrl}` 은 언제나
+   * 게이트웨이 자신이라, FE 를 분리한 배포에서는 로그아웃 후 FE 가 아니라 게이트웨이 루트로 간다.
+   *
+   * ⚠️ 여기서 쓰는 값은 **Keycloak client 의 `post.logout.redirect.uris` 에 등록돼 있어야 한다.**
+   * `setup-realm.sh --console-host <fe-host>` 가 그 항목을 추가한다. 등록이 없으면 Keycloak 이
+   * `invalid_redirect_uri` 로 거절하는데, 증상은 "로그아웃이 안 된다" 로만 보인다.
    */
   private fun oidcLogoutSuccessHandler(
     clientRegistrationRepository: ReactiveClientRegistrationRepository,
   ): ServerLogoutSuccessHandler =
     OidcClientInitiatedServerLogoutSuccessHandler(clientRegistrationRepository).apply {
-      setPostLogoutRedirectUri("{baseUrl}/")
+      setPostLogoutRedirectUri(postLogoutRedirectUri(frontendBaseUri))
     }
 
   /**
@@ -281,6 +297,18 @@ class SecurityConfig(
 
   companion object {
     private const val LOCAL_PROFILE = "local"
+
+    /** FE 를 분리하지 않은 배포의 로그아웃 착지. `{baseUrl}` 은 게이트웨이 자신으로 치환된다. */
+    private const val SAME_ORIGIN_POST_LOGOUT_URI = "{baseUrl}/"
+
+    /**
+     * 로그아웃 착지 URI. FE 베이스가 설정돼 있으면 그쪽, 아니면 게이트웨이 자신.
+     *
+     * 공백만 있는 값을 그대로 넘기면 Keycloak 이 등록 목록과 대조에 실패해 `invalid_redirect_uri`
+     * 가 된다. 설정 실수를 "로그아웃이 안 된다" 로 만나지 않도록 여기서 빈 값과 같게 취급한다.
+     */
+    internal fun postLogoutRedirectUri(frontendBaseUri: String): String =
+      frontendBaseUri.trim().ifEmpty { SAME_ORIGIN_POST_LOGOUT_URI }
 
     /** `application-*.yml` 의 `spring.security.oauth2.client.registration.<이 이름>` 과 일치해야 한다. */
     private const val KEYCLOAK_REGISTRATION_ID = "keycloak"
