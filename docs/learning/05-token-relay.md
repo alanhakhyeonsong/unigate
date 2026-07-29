@@ -113,8 +113,6 @@ Step 5 에서 등록한 세션 저장소(`WebSessionServerOAuth2AuthorizedClient
 
 ## 4. 직접 확인한 것
 
-> ✍️ **직접 실행하고 결과를 기록하는 섹션.**
-
 사전 준비: 로그인해서 유효한 세션 쿠키 확보(04 문서 §4).
 
 확인 1 — 다운스트림이 Bearer 토큰을 받는가
@@ -277,12 +275,29 @@ Step 6 의 `refreshToken()` 이 그 구멍을 메운다.
 
 ## 6. 남은 의문
 
-> ✍️ **직접 작성하는 섹션.**
+> **refresh 관련 의문의 주인은 이 문서다.** [04](04-oauth2-authorization-code-bff.md) §6 에도
+> 같은 질문 두 개가 중복돼 있었는데, 갱신 계기를 만드는 것이 TokenRelay 이므로 여기로 모았다.
 
-- [ ] 동시 요청 여러 개가 **동시에** 만료된 토큰을 만나면 refresh 가 몇 번 일어나는가?
+### 이번에 답이 나온 것
+
+- [x] **다운스트림이 여럿이 되면 라우트마다 clientRegistration 을 나눠야 하는가, 한 토큰에 여러 `aud` 를 담는가?**
+      → **한 토큰에 여러 `aud`.** clientRegistration 은 하나로 두고 Keycloak 의 audience mapper 가
+      `aud` 배열에 대상들을 넣는다. 게이트웨이의 `expected-audience` 도 값 하나
+      (`unigate-downstream-demo`)로 남아 있는데, IAM 라우트의 토큰까지 통과하는 이유가
+      **`aud` 배열에 둘 다 들어 있어서**라는 것을 [34](34-jwt-iss-aud-azp.md) §4.6 에서 확인했다.
+
+      다만 그게 **설계한 결과인지 정리되지 않은 설정인지는 아직 구분이 안 된다** —
+      그 부분은 [34](34-jwt-iss-aud-azp.md) §6 이 이어받는다. 이 문서에서는 닫는다.
+
+### 아직 모르는 것
+
+- [ ] **동시 요청 여러 개가 동시에 만료된 토큰을 만나면 refresh 가 몇 번 일어나는가?**
       Keycloak 의 refresh token rotation(`KEYCLOAK_REALM_SETUP.md` §4.1 에서 OFF 로 둔 것)과
-      겹치면 race 가 되는가?
-- [ ] refresh token 자체가 만료되면(SSO Idle/Max) 그 순간 사용자에게는 무엇이 보이는가?
-- [ ] 다운스트림이 여럿이 되면 각각 다른 `aud` 가 필요하다. 라우트마다 다른 clientRegistration 을
-      써서 audience 를 나눠야 하는가, 아니면 한 토큰에 여러 aud 를 담는가?
-- [ ]
+      겹치면 race 가 되는가? rotation 이 OFF 라 지금은 **터지지 않고 넘어가는 중**일 뿐,
+      켜는 순간 드러날 수 있다.
+      → 확인 방법: 만료 직후 동일 세션 쿠키로 동시 요청 N 건을 던지고 Keycloak 의
+      `/token` 호출 횟수를 센다. 다중 인스턴스면 세션 저장소 경합까지 봐야 한다.
+- [ ] **refresh token 자체가 만료되면(SSO Idle/Max) 그 순간 사용자에게는 무엇이 보이는가?**
+      세션(30분)은 살아 있는데 갱신만 실패하는 구간이 존재하는가.
+      → 게이트웨이가 그때 302 를 줄지 401 을 줄지는 [14](14-problem-detail-xhr-auth-boundary.md) 의
+      `Sec-Fetch-Mode` 분기를 따르는데, **그 분기를 refresh 실패 경로에서 확인한 적은 없다.**

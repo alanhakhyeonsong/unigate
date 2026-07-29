@@ -46,6 +46,8 @@
 | [34](34-jwt-iss-aud-azp.md) | `iss` · `aud` · `azp` 가 각각 보장하는 것 | 2 · 8f | 학습중 | **`aud` 는 Spring 기본 검증에 없다.** 인가 테스트는 이 검증을 지켜주지 않는다 |
 | [35](35-transaction-propagation.md) | 트랜잭션 전파 — 경계가 곧 장애 대응 방식 | 8d · 9b | 학습중 | `REQUIRES_NEW` 는 스타일이 아니라 **"워커가 죽으면 무슨 일이 나는가"** 를 고르는 것 |
 | [36](36-conditional-on-property.md) | `@ConditionalOnProperty` 와 안전 기본값 | 5 · 8d | 학습중 | 어려운 건 문법이 아니라 **`matchIfMissing` 의 방향** — 빠뜨렸을 때 무엇이 선택되는가 |
+| [37](37-vt-pinning-measurement.md) | VT pinning 실측 — 안 나온 것을 근거로 삼기 | 8 | 학습중 | pinning 0건. 단 **플래그가 보고한다는 것부터 증명**해야 0건이 근거가 된다 |
+| [38](38-reactor-coroutine-boundary.md) | Reactor ↔ Coroutine 경계 — `mono { }` 와 `await*` | 1~9 | 학습중 | 방향마다 도구가 다르다. **구독 안 한 `mono { }` 는 예외조차 사라진다** |
 
 상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
 
@@ -61,9 +63,11 @@
 - [x] **Spring Cloud Gateway 필터 체인** → [01](01-scg-route-and-filter-chain.md)
 - [x] **WebFlux 이벤트 루프** → [02](02-webflux-event-loop.md)
 - [x] **Kotlin Coroutine `suspend`** — 스레드가 아니라 연속(continuation)을 중단·재개한다는 것 → [31](31-kotlin-coroutine-suspend.md)
-- [~] **Reactor ↔ Coroutine 경계** — `mono { }`, `awaitBody()` 를 언제 어디에 쓰는가.
-      **컨텍스트 전파 측면은 [13](13-distributed-tracing-reactor-context.md) §5 에서 실패를 겪으며 다뤘다**
-      (`mono { }` 안에서는 ThreadLocal 이 복원되지 않는다). 그 외 사용 지침은 아직 미정리.
+- [x] **Reactor ↔ Coroutine 경계** — `mono { }`, `await*` 를 언제 어디에 쓰는가 → [38](38-reactor-coroutine-boundary.md)
+      **컨텍스트 전파 측면은 [13](13-distributed-tracing-reactor-context.md) §5** 이 이미 다뤘고
+      (`mono { }` 안에서는 ThreadLocal 이 복원되지 않는다), 38 이 나머지 절반 — **방향별 판단 기준**을 채웠다.
+- [x] **구독하지 않은 `mono { }` 는 실행조차 되지 않는다** — 예외까지 사라져 **아무 증상이 없다.**
+      이 스택에서 가장 비싼 실수 → [38](38-reactor-coroutine-boundary.md) §4 [2][4] · §5
 - [x] **OAuth2 Authorization Code + BFF** → [04](04-oauth2-authorization-code-bff.md)
 - [x] **TokenRelay** — 세션의 토큰을 다운스트림으로, 만료 시 refresh → [05](05-token-relay.md)
 - [x] **Spring Session + Valkey(Reactive)** → [03](03-spring-session-valkey-reactive.md)
@@ -100,7 +104,10 @@
 - [x] **Kotlin 인라인 value class 와 Spring DI** — 도메인 VO 에는 맞고 **주입 대상에는 못 쓴다** → [20](20-caller-identity-and-idor-free-design.md) §5 함정 1
 - [x] **감사 스트림의 트랜잭션 경계** — fail-open(GW) vs fail-closed(IAM) → [21](21-two-audit-streams-and-transaction-boundary.md)
 - [x] **outbox 를 쓰지 않을 때를 아는 것** — 단일 DB 쓰기에 얹으면 패턴의 cargo cult → [21](21-two-audit-streams-and-transaction-boundary.md) §2
-- [ ] **VT pinning** — `ReentrantLock` 으로 예방했으나 **실측 여전히 미완**. HikariCP 를 태우게 됐으니 `-Djdk.tracePinnedThreads=full` 로 확인 가능한 조건은 갖춰졌다
+- [x] **VT pinning** — 측정했다. HikariCP 를 커넥션 2개로 조여 400 동시성을 걸어도 **0건**이고, 그 0건이 근거가 되도록 `synchronized` 반례를 먼저 돌려 플래그가 보고한다는 것을 증명했다 → [37](37-vt-pinning-measurement.md)
+      - [x] 남은 조각도 닫았다 — `ServiceAccountTokenProviderConcurrencyTest` 가 **그 락을 실제로 지난다.**
+            VT 32개가 동시에 토큰을 요구해도 발급은 1회다. 락을 빼면 **32회**가 되는 것까지 확인했으므로
+            "통과만 하는 가드"가 아니다. Keycloak 대신 JDK `HttpServer` 를 써 부수효과가 없다
 - [x] **Spring 트랜잭션 전파** — `REQUIRES_NEW` 로 건별 커밋을 만들었는데, 전파 옵션별 동작을 정리한 적은 없다 → [35](35-transaction-propagation.md)
 
 ### Phase 9 — 정책 · 멀티테넌시
@@ -128,10 +135,25 @@
 - [x] **VU 가 모자라면 부하가 조용히 줄어든다** — `dropped_iterations` 로만 보이고 종료코드는 0 → [29](29-k6-load-testing-basics.md) §4.3
 - [x] **request 는 스케줄링과 HPA 가 공유하는데 요구 방향이 반대다** — 낮추면 스케줄은 되고 HPA 는 과민해진다 → [28](28-k6-loadtest-silent-failures.md) §5.3
 - [ ] **최대 처리량과 병목 위치** — 이번 수치는 HPA 상한에 막힌 값이다. 노드 여유 확보 후 재측정 필요 → [28](28-k6-loadtest-silent-failures.md) §6
-- [ ] **429 를 받은 클라이언트의 재시도 정책** — 거절이 빠르다는 것까지만 봤다. backoff·`Retry-After` 는 정하지 않았다
-- [ ] **management port 분리** — `/actuator/prometheus` 가 인증 뒤에 있어 스크랩이 401. probe 포트까지 함께 옮겨야 한다
-
-### 참고 (직접 쓰지는 않지만 이해가 필요한 것)
+      **2026-07-29 재확인 — 조건이 아직 안 갖춰졌다.** 워커 노드 3대의 **requests 점유**가
+      cpu 82·97·97%, memory 85·85·93% 다(실사용은 cpu 7~13% 로 한산한데 **예약이 꽉 찼다**).
+      HPA 상한을 올려도 파드가 `Pending` 에 걸린다. 상한 4는 여전히 4다.
+      → 막고 있는 것은 **부하가 아니라 예약**이다. 이 구분이 [27](27-helm-library-chart-and-alpha-deploy.md) §5.3 의 "예약 포화가 용량 부족으로 보인다" 와 같다.
+- [~] **429 를 받은 클라이언트의 재시도 정책** — **서버 조각을 채웠다**(`RetryAfterFilter`).
+      거절한 limiter 가 남긴 `X-RateLimit-*` 만으로 대기 초를 계산해 `Retry-After` 를 붙인다
+      (`ceil((requestedTokens - remaining) / replenishRate)`, 최소 1초). 설정을 다시 읽지 않으므로
+      limiter 파라미터가 바뀌어도 어긋나지 않는다. 실측: 가입 라우트 4번째 요청이 `429 Retry-After: 5`,
+      즉시 재시도는 429, **5초 뒤에는 통과**.
+      **자동 재시도는 여전히 하지 않는다** — FE 의 `shouldRetry` 가 4xx 를 막는 판단은 그대로 옳다
+      ("429 재시도는 토큰버킷을 더 소진시킨다").
+      - [ ] 남은 것: **FE 가 그 헤더를 읽지 않는다.** `parseProblem` 은 본문만 보고 헤더를 버린다 →
+            사용자에게 "N초 후 다시 시도" 를 보여줄 수 없다. 서버가 값을 줘도 **아무도 안 보면 없는 것과 같다**
+- [ ] **management port 분리** — `/actuator/prometheus` 가 인증 뒤에 있어 스크랩이 401. probe 포트까지 함께 옮겨야 한다.
+      **`iam` 에서 401 을 실제로 재현했다**(deny-by-default 가 의도대로 막은 것이지 설정 실수가 아니다) → [37](37-vt-pinning-measurement.md) §4.4
+      2026-07-29 확인 — `management.server.port` 는 **두 모듈 모두 미설정**이고,
+      alpha 차트도 `podAnnotations: {}` 로 `prometheus.io/scrape` 를 **일부러 안 켠 상태**다
+      (`deploy/helm/unigate-gateway/values-alpha.yaml` 주석: "애노테이션이 있으니 수집되고 있다는
+      착각이 관측성 공백보다 나쁘다"). 즉 **관측성 공백을 알고 비워둔 것**이지 놓친 게 아니다.
 
 ### 샘플 앱 구성 시
 
@@ -139,3 +161,6 @@
 - [x] **cross-origin 배치의 대가** — CORS·`loginUrl` 절대경로화. 로컬 same-origin 에서는 **절대 드러나지 않는다** → [26](26-bff-spa-integration.md) §5
 - [x] **TanStack Query 캐시와 테넌트 격리** — 서버가 격리해도 캐시 키가 무너뜨리면 요청조차 안 나간다 → [26](26-bff-spa-integration.md) §5
 - [ ] **재로그인 강제** — claim 갱신을 서버가 알릴 수단이 없다 → [26](26-bff-spa-integration.md) §6
+      **[33](33-claim-propagation-delay.md) 과 같은 뿌리다** — 거긴 "회수해도 즉시 안 막힌다"(지연 두 겹),
+      여긴 "부여해도 즉시 안 보인다". 방향만 반대고 원인이 같아 **해결책도 하나**여야 한다.
+      지금은 양쪽 다 화면 문구로 안내할 뿐이다.

@@ -97,8 +97,6 @@ Resolved [NoResourceFoundException: 404 NOT_FOUND "No static resource nope."] fo
 
 ## 4. 직접 확인한 것
 
-> ✍️ **직접 실행하고 결과를 기록하는 섹션.**
-
 사전 준비:
 ```bash
 docker compose up -d
@@ -365,8 +363,6 @@ Caused by: java.net.ConnectException: Connection refused
 
 ## 6. 남은 의문
 
-> ✍️ **직접 작성하는 섹션.** 다음 학습의 진입점이다.
-
 ### 이번에 답이 나온 것
 
 - [x] **다운스트림이 죽었을 때 게이트웨이는 어떤 응답을 만드는가?**
@@ -467,4 +463,3 @@ Caused by: java.net.ConnectException: Connection refused
       상태코드 정정(완료)과 **장애 전파 차단**은 다른 문제다. 다운스트림이 계속 죽어 있을 때
       매 요청이 연결 시도로 40ms 씩 소모하는 것을 언제부터 막아야 하는가.
       의존성(`spring-cloud-starter-circuitbreaker-reactor-resilience4j`)은 이미 들어와 있다.
-- [ ] 
