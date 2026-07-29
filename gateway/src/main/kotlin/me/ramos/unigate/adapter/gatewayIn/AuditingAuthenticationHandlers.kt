@@ -7,6 +7,7 @@ import me.ramos.unigate.application.audit.dto.RecordAuditEventCommand
 import me.ramos.unigate.application.audit.port.inbound.RecordAuditEventInPort
 import me.ramos.unigate.domain.audit.enums.AuditEventType
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.security.core.Authentication
 import org.springframework.security.core.AuthenticationException
 import org.springframework.security.oauth2.client.authentication.OAuth2AuthenticationToken
@@ -20,6 +21,7 @@ import org.springframework.security.web.server.authentication.ServerAuthenticati
 import org.springframework.security.web.server.authentication.logout.ServerLogoutHandler
 import org.springframework.stereotype.Component
 import reactor.core.publisher.Mono
+import java.net.URI
 
 /**
  * 인증 결과를 감사로그 + 메트릭으로 남기는 driving 어댑터.
@@ -50,15 +52,47 @@ import reactor.core.publisher.Mono
 private const val METRIC_LOGIN = "unigate.auth.login"
 private const val METRIC_LOGOUT = "unigate.auth.logout"
 
-/** 로그인 성공 → LOGIN_SUCCESS 감사 + `unigate.auth.login{result=success}` 증가 후 기본 리다이렉트. */
+/**
+ * 로그인 후 착지 URI. 비어 있으면 **null** 을 돌려 기본값(`/`)을 그대로 두게 한다.
+ *
+ * 빈 값에 `URI.create("")` 를 넣으면 예외 없이 통과하지만 `Location:` 이 빈 문자열이 되어
+ * 브라우저가 현재 URL 로 되돌아온다 — 로그인 루프처럼 보인다. 그래서 "설정 없음" 과
+ * "빈 문자열" 을 같게 취급하고 **아예 손대지 않는다.**
+ */
+internal fun postLoginLocation(frontendBaseUri: String): URI? =
+  frontendBaseUri.trim().takeIf { it.isNotEmpty() }?.let(URI::create)
+
+/**
+ * 로그인 성공 → LOGIN_SUCCESS 감사 + `unigate.auth.login{result=success}` 증가 후 리다이렉트.
+ *
+ * ## 어디로 리다이렉트하는가 — FE 가 다른 호스트면 기본값이 틀린다
+ * [RedirectServerAuthenticationSuccessHandler] 를 **인자 없이** 만들면 착지가 `/` 다(저장된 요청이
+ * 있으면 그쪽이 우선). 그런데 이 게이트웨이의 미인증 진입점은 302 가 아니라 **401 + `loginUrl`** 을
+ * 주는 방식이라([ProblemDetailAuthenticationHandlers]) 원래 요청을 저장하지 않는다. 저장된다 해도
+ * 그건 FE 페이지가 아니라 API 경로다. 결국 **항상 `/`** 로 떨어진다.
+ *
+ * same-origin 배포(로컬 Vite dev proxy)에서는 `/` 가 곧 FE 라 아무 문제가 없다.
+ * **FE 를 다른 호스트에 두는 순간** `/` 는 게이트웨이 루트가 되고, 거기엔 FE 가 없어 401 이 뜬다.
+ * 로그인은 성공했는데 화면이 안 뜨는 형태라 원인이 Keycloak 으로 오해되기 쉽다 —
+ * 그러나 Keycloak 의 `redirectUris` 는 **인가 코드를 배달할 주소**일 뿐이고, 코드가 콜백에 도착한
+ * 시점에 Keycloak 의 역할은 끝난다. 그 다음 착지를 정하는 것은 여기다.
+ *
+ * 그래서 `unigate.frontend.base-uri` 가 있으면 그리로 보낸다. 비어 있으면 종전대로 `/` 다 —
+ * 로컬 same-origin 동작을 바꾸지 않기 위해서다. 실측 기록은
+ * `docs/learning/26-bff-spa-integration.md` §5.
+ */
 @Component
 class AuditingAuthenticationSuccessHandler(
   private val recordAuditEventInPort: RecordAuditEventInPort,
   private val meterRegistry: MeterRegistry,
   private val traceIdResolver: TraceIdResolver,
+  @Value("\${unigate.frontend.base-uri:}") frontendBaseUri: String,
 ) : ServerAuthenticationSuccessHandler {
   private val log = LoggerFactory.getLogger(javaClass)
-  private val delegate = RedirectServerAuthenticationSuccessHandler()
+  private val delegate =
+    RedirectServerAuthenticationSuccessHandler().apply {
+      postLoginLocation(frontendBaseUri)?.let { setLocation(it) }
+    }
 
   override fun onAuthenticationSuccess(
     webFilterExchange: WebFilterExchange,
