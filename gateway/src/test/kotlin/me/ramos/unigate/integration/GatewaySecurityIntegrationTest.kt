@@ -126,6 +126,39 @@ class GatewaySecurityIntegrationTest {
   }
 
   @Test
+  fun `CSRF 토큰 엔드포인트는 인증 없이 열려 있고 쿠키와 같은 값을 준다`() {
+    // cross-origin FE 는 `XSRF-TOKEN` 쿠키를 읽을 수 없다(host-only). 이 경로가 **유일한 통로**다.
+    // 인증을 요구하면 미인증 상태에서 토큰을 못 받고, 증상은 403 하나로만 나타난다.
+    val result =
+      client
+        .get()
+        .uri("/csrf")
+        .exchange()
+        .expectStatus()
+        .isOk
+        .expectBody()
+        .jsonPath("$.headerName")
+        .isEqualTo("X-XSRF-TOKEN")
+        .jsonPath("$.parameterName")
+        .isEqualTo("_csrf")
+        .returnResult()
+
+    // ⚠️ 본문의 토큰과 쿠키의 토큰이 **같아야** double-submit 이 성립한다.
+    // 서버는 요청에 실린 값을 쿠키의 값과 비교하기 때문이다. 둘이 갈리면 항상 403 이다.
+    val cookieToken =
+      result.responseCookies
+        .getFirst("XSRF-TOKEN")
+        ?.value
+    val bodyToken =
+      String(result.responseBody!!)
+        .substringAfter("\"token\":\"")
+        .substringBefore('"')
+
+    assertThat(cookieToken).isNotBlank()
+    assertThat(bodyToken).isEqualTo(cookieToken)
+  }
+
+  @Test
   fun `쿠키로 받은 CSRF 토큰을 헤더로 보내면 통과한다`() {
     // 토큰을 **받을 수 있다**는 것과 그 토큰이 **통한다**는 것은 다른 문제다.
     //
