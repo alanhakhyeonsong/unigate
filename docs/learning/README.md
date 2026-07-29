@@ -39,6 +39,13 @@
 | [27](27-helm-library-chart-and-alpha-deploy.md) | 모듈별 Helm 차트와 실전 배포 | 6 | 학습중 | 비밀은 git 말고 **`helm get values -a`** 로도 샌다. 배포 오류는 레지스트리·인증·용량으로 위장한다 |
 | [28](28-k6-loadtest-silent-failures.md) | 부하테스트가 조용히 실패하는 법 | 6 | 학습중 | 429 가 0건이고 checks 가 100% 통과인데 아무것도 측정하지 않을 수 있다. **성공만 검사하면 실패가 침묵한다** |
 | [29](29-k6-load-testing-basics.md) | k6 실행 모델 — 생명주기 · executor · 판정 | 6 | 학습중 | 28 의 실패들이 전부 같은 뿌리였다. **check 는 실패해도 exit 0, threshold 만 exit 99** |
+| [30](30-session-token-refresh-recurrence.md) | 같은 실패가 두 번 났다 — 세션에서 토큰 꺼내기 | 9f | 학습중 | repository 는 저장된 걸 주고 manager 는 갱신해서 준다. **이름이 자연스러운 쪽이 틀린 쪽** |
+| [31](31-kotlin-coroutine-suspend.md) | `suspend` 는 스레드를 멈추지 않는다 | 2~5 | 학습중 | 컴파일하면 `Object f(Continuation)` 이 된다. 바이트코드에 `COROUTINE_SUSPENDED` 분기가 그대로 있다 |
+| [32](32-reactive-transaction.md) | Reactive 에서 `@Transactional` | 5 | 학습중 | "안 된다"가 아니라 **조건이 다르고, 못 맞추면 예외 없이 안 걸린다.** gateway 는 0개 — 제약이 아니라 선택 |
+| [33](33-claim-propagation-delay.md) | 권한을 회수해도 즉시 막히지 않는다 | 9e~9f | 학습중 | 지연이 **두 겹**이다 — outbox(최대 10s) + 토큰 만료(5m). 관리 화면과 실제 차단이 어긋난다 |
+| [34](34-jwt-iss-aud-azp.md) | `iss` · `aud` · `azp` 가 각각 보장하는 것 | 2 · 8f | 학습중 | **`aud` 는 Spring 기본 검증에 없다.** 인가 테스트는 이 검증을 지켜주지 않는다 |
+| [35](35-transaction-propagation.md) | 트랜잭션 전파 — 경계가 곧 장애 대응 방식 | 8d · 9b | 학습중 | `REQUIRES_NEW` 는 스타일이 아니라 **"워커가 죽으면 무슨 일이 나는가"** 를 고르는 것 |
+| [36](36-conditional-on-property.md) | `@ConditionalOnProperty` 와 안전 기본값 | 5 · 8d | 학습중 | 어려운 건 문법이 아니라 **`matchIfMissing` 의 방향** — 빠뜨렸을 때 무엇이 선택되는가 |
 
 상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
 
@@ -53,7 +60,7 @@
 
 - [x] **Spring Cloud Gateway 필터 체인** → [01](01-scg-route-and-filter-chain.md)
 - [x] **WebFlux 이벤트 루프** → [02](02-webflux-event-loop.md)
-- [ ] **Kotlin Coroutine `suspend`** — 스레드가 아니라 연속(continuation)을 중단·재개한다는 것
+- [x] **Kotlin Coroutine `suspend`** — 스레드가 아니라 연속(continuation)을 중단·재개한다는 것 → [31](31-kotlin-coroutine-suspend.md)
 - [~] **Reactor ↔ Coroutine 경계** — `mono { }`, `awaitBody()` 를 언제 어디에 쓰는가.
       **컨텍스트 전파 측면은 [13](13-distributed-tracing-reactor-context.md) §5 에서 실패를 겪으며 다뤘다**
       (`mono { }` 안에서는 ThreadLocal 이 복원되지 않는다). 그 외 사용 지침은 아직 미정리.
@@ -65,12 +72,12 @@
 ### Phase 2 — 토큰 검증
 
 - [x] **JWKS 서명 검증** — introspection 대비 장단점, 키 회전(`kid` 미스) 대응 → [10](10-jwks-local-verification.md)
-- [ ] **JWT 구조** — `iss` / `aud` / `azp` 가 각각 무엇을 보장하는가
+- [x] **JWT 구조** — `iss` / `aud` / `azp` 가 각각 무엇을 보장하는가 → [34](34-jwt-iss-aud-azp.md)
 
 ### Phase 3~4 — Resilience · 관측성 · 영속성
 
 - [x] **R2DBC vs JPA** — 지연로딩·더티체킹·영속성 컨텍스트가 없다는 것의 실제 영향 → [12](12-observability-audit-r2dbc.md)
-- [ ] **Reactive 트랜잭션** — `@Transactional` 이 왜 그대로 동작하지 않는가
+- [x] **Reactive 트랜잭션** — `@Transactional` 이 왜 그대로 동작하지 않는가 → [32](32-reactive-transaction.md)
 - [x] **Resilience4j (reactive)** — Circuit Breaker · Bulkhead · Timeout 의 상호작용 → [11](11-resilience-ratelimit-circuitbreaker.md)
 - [x] **분산 트레이싱 · Reactor 컨텍스트 전파** → [13](13-distributed-tracing-reactor-context.md)
 - [x] **RFC 9457 Problem Detail · XHR 인증 경계** → [14](14-problem-detail-xhr-auth-boundary.md)
@@ -79,7 +86,7 @@
 
 - [x] **ArchUnit 으로 아키텍처 테스트** → [15](15-archunit-dependency-guard.md)
 - [x] **포트 교체가능성** — 구현이 하나뿐인 인터페이스는 추상화가 검증되지 않은 상태다 → [15](15-archunit-dependency-guard.md) §4
-- [ ] **`@ConditionalOnProperty` 로 빈 선택** — 조건부 자동설정의 우선순위·디버깅 방법
+- [x] **`@ConditionalOnProperty` 로 빈 선택** — 조건부 자동설정의 우선순위·디버깅 방법 → [36](36-conditional-on-property.md)
 
 ### Phase 8 — IAM 서비스
 
@@ -94,7 +101,7 @@
 - [x] **감사 스트림의 트랜잭션 경계** — fail-open(GW) vs fail-closed(IAM) → [21](21-two-audit-streams-and-transaction-boundary.md)
 - [x] **outbox 를 쓰지 않을 때를 아는 것** — 단일 DB 쓰기에 얹으면 패턴의 cargo cult → [21](21-two-audit-streams-and-transaction-boundary.md) §2
 - [ ] **VT pinning** — `ReentrantLock` 으로 예방했으나 **실측 여전히 미완**. HikariCP 를 태우게 됐으니 `-Djdk.tracePinnedThreads=full` 로 확인 가능한 조건은 갖춰졌다
-- [ ] **Spring 트랜잭션 전파** — `REQUIRES_NEW` 로 건별 커밋을 만들었는데, 전파 옵션별 동작을 정리한 적은 없다
+- [x] **Spring 트랜잭션 전파** — `REQUIRES_NEW` 로 건별 커밋을 만들었는데, 전파 옵션별 동작을 정리한 적은 없다 → [35](35-transaction-propagation.md)
 
 ### Phase 9 — 정책 · 멀티테넌시
 
@@ -105,8 +112,8 @@
 - [x] **default-deny 로 반복을 없애기** — opt-in 은 잊으면 열리고 opt-out 은 잊으면 닫힌다 → [24](24-fail-closed-by-default-tenant-guard.md)
 - [x] **인라인 value class 를 주입 자리에 쓰면 안 되는 이유(재발)** — 파라미터 타입이 `String` 으로 펴진다 → [24](24-fail-closed-by-default-tenant-guard.md) §5 · [20](20-caller-identity-and-idor-free-design.md) §5 함정 1
 - [x] **보상 트랜잭션** — outbox 로 두 시스템을 쓸 때 영구 실패에서 로컬을 되돌리는 법 → [25](25-email-change-outbox-compensation.md)
-- [ ] **claim 기반 인가의 반영 지연** — 멤버십을 해제해도 토큰 만료(5분) 전까지 통과한다. 즉시 차단 수단은 아직 없다
-- [ ] **세션 토큰 갱신 경로의 재발** — repository 로 토큰을 직접 꺼내면 만료를 갱신하지 못한다. [04](04-oauth2-authorization-code-bff.md) §6 과 [23](23-coarse-authz-tenant-gate.md) §4.6 이 **같은 실패의 두 번째 발생**이다
+- [x] **claim 기반 인가의 반영 지연** — 지연이 **두 겹**(outbox + 토큰 만료)이라는 것까지 정리했다. 즉시 차단 수단은 여전히 없다 → [33](33-claim-propagation-delay.md)
+- [x] **세션 토큰 갱신 경로의 재발** — repository 로 토큰을 직접 꺼내면 만료를 갱신하지 못한다. [04](04-oauth2-authorization-code-bff.md) §6 과 [23](23-coarse-authz-tenant-gate.md) §4.6 이 **같은 실패의 두 번째 발생**이다 → [30](30-session-token-refresh-recurrence.md)
 
 ### Phase 6 — 실전 Alpha 배포 · 부하테스트
 
