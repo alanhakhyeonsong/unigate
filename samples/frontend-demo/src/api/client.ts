@@ -1,4 +1,4 @@
-import { CSRF_HEADER, readCsrfToken } from './csrf'
+import { ensureCsrfToken, invalidateCsrfToken } from './csrf'
 import { toAbsolute } from './env'
 import { ApiError, parseProblem } from './problem'
 
@@ -26,8 +26,10 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   if (tenant) headers['X-Requested-Tenant'] = tenant
 
   if (method !== 'GET') {
-    const token = readCsrfToken()
-    if (token) headers[CSRF_HEADER] = token
+    // ⚠️ 비동기다. cross-origin 배포에서는 쿠키를 못 읽어 게이트웨이에서 받아 오기 때문이다
+    // (`api/csrf.ts`). 헤더 이름도 서버가 알려준 것을 그대로 쓴다.
+    const csrf = await ensureCsrfToken()
+    if (csrf) headers[csrf.headerName] = csrf.token
   }
 
   const res = await fetch(toAbsolute(path), {
@@ -42,6 +44,11 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     const text = await res.text()
     return (text ? JSON.parse(text) : undefined) as T
   }
+
+  // 403 은 인가 실패일 수도, **토큰이 상해서**일 수도 있다(로그아웃·재로그인 뒤 세션이 바뀐 경우).
+  // 구분할 방법이 응답에 없으므로 일단 캐시를 버린다. 인가 실패였다면 버려도 손해가 없고,
+  // 토큰 문제였다면 버리지 않을 때 **새로고침 전까지 계속 403** 이다.
+  if (res.status === 403) invalidateCsrfToken()
 
   const problem = await parseProblem(res)
 

@@ -1,6 +1,7 @@
 package me.ramos.unigate.config
 
 import me.ramos.unigate.adapter.gatewayIn.CsrfTokenCookieFilter
+import me.ramos.unigate.adapter.gatewayIn.CsrfTokenEndpoint
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
@@ -326,6 +327,13 @@ class SecurityConfig(
         "/actuator/health",
         "/actuator/health/**",
         "/actuator/info",
+        // CSRF 토큰 조회. cross-origin FE 는 `XSRF-TOKEN` 쿠키를 읽을 수 없어(host-only)
+        // 이 경로로 받아 간다. 공개인 이유와 그래도 안전한 근거는 [CsrfTokenEndpoint] KDoc 참조 —
+        // 요약하면 **접근 제어를 CORS 허용 목록이 대신한다.**
+        //
+        // ⚠️ 인증 필요로 바꾸면 미인증 상태에서 토큰을 못 받는다. 지금은 가입이 CSRF 예외라
+        // 문제가 없지만, 인증 없이 하는 POST 가 하나라도 늘면 그 순간 조용히 403 이 된다.
+        CsrfTokenEndpoint.CSRF_TOKEN_PATH,
         // CB fallback — 인증된 /api 요청이 forward 로 도달하지만, 직접 접근해도 503 만 반환하므로
         // 공개로 둔다(민감정보 없음). 인증 필요로 두면 forward 시 재인증에 걸릴 수 있다.
         "/fallback/**",
