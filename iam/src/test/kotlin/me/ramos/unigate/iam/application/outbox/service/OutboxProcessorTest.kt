@@ -14,6 +14,7 @@ import me.ramos.unigate.iam.application.outbox.port.outbound.OutboxPort
 import me.ramos.unigate.iam.application.user.port.outbound.IdentityAlreadyExistsException
 import me.ramos.unigate.iam.application.user.port.outbound.IdentityProviderPort
 import me.ramos.unigate.iam.application.user.port.outbound.IdentityProviderUnavailableException
+import me.ramos.unigate.iam.application.user.port.outbound.ProfileConcurrentlyModifiedException
 import me.ramos.unigate.iam.application.user.port.outbound.UserProfileRepositoryPort
 import me.ramos.unigate.iam.domain.audit.enums.AuditEventType
 import me.ramos.unigate.iam.domain.audit.model.AuditEvent
@@ -278,6 +279,74 @@ class OutboxProcessorTest {
 
     // 사용자에게 알릴 수 있도록 프로필도 실패 상태가 된다.
     assertThat(profile.onboardingState).isEqualTo(OnboardingState.IDENTITY_FAILED)
+  }
+
+  // ── 낙관적 락 (미해결 6번) ────────────────────────────────────────────
+
+  /**
+   * **분류 회귀 테스트.** 이 분기가 없으면 미분류 `catch` 가 잡아 **DEAD** 로 보낸다.
+   *
+   * 그러면 아무 잘못 없는 가입 지시가 "하필 그 순간 사용자가 자기 프로필을 수정했다" 는 이유로
+   * 죽고, 운영자가 DLQ 에서 손으로 되살려야 한다. 재시도로 낫는 실패를 사람 일감으로 만드는 것은
+   * 분류 실패다.
+   */
+  @Test
+  fun `프로필 동시 수정 충돌은 DEAD 가 아니라 재시도 대상이다`() {
+    every { outboxPort.claimNext(any()) } returns pendingRecord()
+    every { identityProviderPort.createUser(any()) } returns UserRef("kc-123")
+    every { userProfileRepository.findByEmail("alice@example.local") } returns
+      UserProfile.register("alice@example.local", "alice")
+    every { userProfileRepository.save(any()) } throws ProfileConcurrentlyModifiedException()
+
+    processor.processOne()
+
+    val saved = slot<OutboxRecord>()
+    verify { outboxPort.update(capture(saved)) }
+    assertThat(saved.captured.status).isEqualTo(OutboxStatus.PENDING)
+    assertThat(saved.captured.attempts).isEqualTo(1)
+    assertThat(saved.captured.lastError).isEqualTo("profile_concurrently_modified")
+  }
+
+  /**
+   * 회로가 판정하는 것은 **"외부 시스템이 죽었는가"** 하나뿐이다([OutboxCircuit]).
+   *
+   * 낙관적 락 충돌은 우리 DB 안의 경합이라 Keycloak 과 무관하다. 이것을 회로에 세면 프로필 수정이
+   * 몰리는 시간대에 **워커 전체가 멈춘다** — 정작 외부는 멀쩡한데 모든 지시의 반영이 밀린다.
+   *
+   * 임계치보다 많이 반복시켜 확인한다. 한두 번으로는 열리지 않으므로 구분이 안 된다.
+   */
+  @Test
+  fun `동시 수정이 반복돼도 회로는 열리지 않는다 — 외부 장애가 아니다`() {
+    every { identityProviderPort.createUser(any()) } returns UserRef("kc-123")
+    every { userProfileRepository.findByEmail("alice@example.local") } returns
+      UserProfile.register("alice@example.local", "alice")
+    every { userProfileRepository.save(any()) } throws ProfileConcurrentlyModifiedException()
+
+    repeat(OutboxCircuit.FAILURE_THRESHOLD + 1) {
+      every { outboxPort.claimNext(any()) } returns pendingRecord()
+      processor.processOne()
+    }
+
+    assertThat(circuit.isOpen()).isFalse()
+  }
+
+  /**
+   * 대조군 — 같은 횟수의 **외부** 장애는 회로를 연다.
+   *
+   * 위 테스트만 있으면 "회로가 애초에 안 열리는 것" 과 "이 사유를 안 세는 것" 이 구분되지 않는다.
+   * P9f 의 대조군 헤더와 P9a 의 "전부 null 단언" 함정이 말하는 것과 같은 이유다.
+   */
+  @Test
+  fun `같은 횟수의 외부 장애는 회로를 연다 — 대조군`() {
+    every { identityProviderPort.createUser(any()) } throws
+      IdentityProviderUnavailableException("keycloak down")
+
+    repeat(OutboxCircuit.FAILURE_THRESHOLD) {
+      every { outboxPort.claimNext(any()) } returns pendingRecord()
+      processor.processOne()
+    }
+
+    assertThat(circuit.isOpen()).isTrue()
   }
 
   // ── Phase 8g: 감사 ────────────────────────────────────────────────────

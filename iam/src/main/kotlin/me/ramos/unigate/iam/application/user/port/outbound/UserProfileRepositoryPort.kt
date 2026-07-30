@@ -21,7 +21,12 @@ import me.ramos.unigate.iam.domain.user.model.UserProfile
  * 0건이 되어 "로그인은 되는데 프로필이 없다" 가 된다. `sub` 는 불변이라 그런 표류가 없다.
  */
 interface UserProfileRepositoryPort {
-  /** 신규 저장 또는 갱신(email 기준). */
+  /**
+   * 신규 저장 또는 갱신.
+   *
+   * @throws ProfileConcurrentlyModifiedException 조회 이후 다른 트랜잭션이 같은 프로필을 바꿨을 때.
+   *   **호출자가 반드시 처리해야 한다** — 사용자 요청이면 409, 워커면 재시도다.
+   */
   fun save(profile: UserProfile): UserProfile
 
   fun findByEmail(email: String): UserProfile?
@@ -37,3 +42,27 @@ interface UserProfileRepositoryPort {
    */
   fun findByUserRef(userRef: UserRef): UserProfile?
 }
+
+/**
+ * 조회 이후 다른 트랜잭션이 같은 프로필을 바꿨다 — 낙관적 락 충돌.
+ *
+ * ## 왜 Spring 예외를 그대로 쓰지 않는가
+ * `OptimisticLockingFailureException` 은 `org.springframework.dao` 소속이다. application 이 그것을
+ * 잡으면 유스케이스가 **영속 기술을 알게 된다** — 저장소를 다른 것으로 갈아끼우면 그 catch 가
+ * 조용히 무의미해진다(예외 타입이 달라지므로 컴파일은 되고 런타임에만 안 잡힌다).
+ *
+ * 그래서 [IdentityProviderPort] 가 Keycloak 의 HTTP 상태를 재시도 가능/불가로 번역한 것과
+ * 같은 방식으로, 어댑터가 여기서 정의한 타입으로 번역한다.
+ *
+ * ## **재시도하면 대개 성공한다**
+ * 이 실패는 데이터가 잘못된 것이 아니라 **타이밍**이 겹친 것이다. 다시 읽어 다시 적용하면 된다.
+ * 워커는 이 예외를 `Retryable` 로 분류해야 하며, `Permanent`(DEAD)로 보내면 정상 지시가
+ * 사용자의 프로필 수정과 겹쳤다는 이유만으로 죽는다.
+ *
+ * ⚠️ 자동 재시도를 **여기서** 하지 않는 이유: 무엇을 다시 할지가 호출자마다 다르다. 워커는 지시를
+ * 통째로 다시 실행해야 하고(외부 호출 포함), 사용자 요청은 재시도 대신 최신 상태를 보여주고
+ * 다시 결정하게 해야 한다 — 사라진 남의 변경 위에 자기 변경을 덮는 것이 lost update 그 자체다.
+ */
+class ProfileConcurrentlyModifiedException(
+  cause: Throwable? = null,
+) : RuntimeException("다른 요청이 먼저 이 프로필을 변경했습니다", cause)

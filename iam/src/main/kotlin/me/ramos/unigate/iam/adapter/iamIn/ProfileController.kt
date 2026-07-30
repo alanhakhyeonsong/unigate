@@ -12,6 +12,7 @@ import me.ramos.unigate.iam.application.user.port.inbound.AcceptConsentInPort
 import me.ramos.unigate.iam.application.user.port.inbound.ChangeMyEmailInPort
 import me.ramos.unigate.iam.application.user.port.inbound.GetMyProfileInPort
 import me.ramos.unigate.iam.application.user.port.inbound.UpdateMyProfileInPort
+import me.ramos.unigate.iam.application.user.port.outbound.ProfileConcurrentlyModifiedException
 import me.ramos.unigate.iam.application.user.service.ConsentVersionMismatchException
 import me.ramos.unigate.iam.application.user.service.EmailAlreadyRegisteredException
 import me.ramos.unigate.iam.application.user.service.ProfileNotFoundException
@@ -215,6 +216,29 @@ class ProfileController(
         title = "Consent Version Mismatch"
         setProperty("reasonCode", "consent_version_mismatch")
         setProperty("currentTosVersion", e.current)
+      }
+
+  /**
+   * 동시 수정 충돌 → 409.
+   *
+   * ## 서버가 재시도하지 않고 사용자에게 돌려주는 이유
+   * 여기서 다시 읽어 다시 적용하면 **먼저 저장된 남의 변경을 조용히 덮는다** — 낙관적 락으로 막으려던
+   * lost update 를 서버가 대신 해주는 꼴이다. 무엇을 살릴지는 사람이 정해야 한다.
+   *
+   * 다른 409 들(`email_already_in_use` 등)과 상태코드가 같은 것은 의도적이다. 클라이언트가 분기할
+   * 근거는 `reasonCode` 이고(이 컨트롤러의 다른 핸들러들과 같은 판단), 이 사유만은 **그대로 다시
+   * 보내면 성공할 수 있다**는 점에서 재시도 안내가 적절하다.
+   */
+  @ExceptionHandler(ProfileConcurrentlyModifiedException::class)
+  @ResponseStatus(HttpStatus.CONFLICT)
+  fun handleConcurrentModification(e: ProfileConcurrentlyModifiedException): ProblemDetail =
+    ProblemDetail
+      .forStatusAndDetail(
+        HttpStatus.CONFLICT,
+        "다른 요청이 먼저 프로필을 변경했습니다. 최신 정보를 확인한 뒤 다시 시도해 주세요.",
+      ).apply {
+        title = "Profile Modified Concurrently"
+        setProperty("reasonCode", "profile_modified_concurrently")
       }
 
   /**

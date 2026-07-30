@@ -13,6 +13,7 @@ import me.ramos.unigate.iam.application.user.port.outbound.IdentityAlreadyExists
 import me.ramos.unigate.iam.application.user.port.outbound.IdentityProviderPort
 import me.ramos.unigate.iam.application.user.port.outbound.IdentityProviderUnavailableException
 import me.ramos.unigate.iam.application.user.port.outbound.PayloadSerializerPort
+import me.ramos.unigate.iam.application.user.port.outbound.ProfileConcurrentlyModifiedException
 import me.ramos.unigate.iam.application.user.port.outbound.UserProfileRepositoryPort
 import me.ramos.unigate.iam.domain.audit.enums.AuditEventType
 import me.ramos.unigate.iam.domain.audit.model.AuditEvent
@@ -110,13 +111,21 @@ class OutboxProcessor(
       }
 
       is ProcessOutcome.Retryable -> {
-        // 외부 시스템이 흔들린다. 회로에 실패를 세어, 연속되면 클레임 자체를 멈추게 한다.
+        // 외부 시스템이 흔들린다면 회로에 실패를 세어, 연속되면 클레임 자체를 멈추게 한다.
+        // 외부와 무관한 실패(우리 DB 안의 경합)는 세지 않는다 — 판정 축이 다르다.
         //
         // ⚠️ 여기서는 **감사를 남기지 않는다.** 재시도 실패는 아직 진행 중인 상태이지 확정된 사건이
         // 아니다. 남기면 Keycloak 이 몇 분 흔들릴 때마다 감사 테이블에 같은 사건이 여러 건 쌓여
         // 정작 확정 사건이 묻힌다. 그 관측은 로그·메트릭의 몫이다.
-        circuit.recordFailure()
-        log.warn("outbox 재시도 예정 id={} attempts={}", record.id, record.attempts + 1)
+        if (outcome.countsTowardCircuit) {
+          circuit.recordFailure()
+        }
+        log.warn(
+          "outbox 재시도 예정 id={} attempts={} reason={}",
+          record.id,
+          record.attempts + 1,
+          outcome.reason,
+        )
         outboxPort.update(record.failedRetryable(now, outcome.reason, outcome.exceptionClass))
       }
     }
@@ -167,6 +176,20 @@ class OutboxProcessor(
       )
     } catch (e: IdentityProviderUnavailableException) {
       ProcessOutcome.Retryable("identity_provider_unavailable", e.javaClass.name)
+    } catch (e: ProfileConcurrentlyModifiedException) {
+      // 사용자가 같은 프로필을 동시에 고쳤다. **데이터가 잘못된 게 아니라 타이밍이 겹친 것**이라
+      // 다음 폴링에 최신 상태를 다시 읽으면 대개 성공한다.
+      //
+      // ⚠️ 이 분기가 없으면 아래 미분류 `catch` 가 잡아 **DEAD** 로 보낸다. 그러면 정상 지시가
+      // "하필 사용자가 그 순간 프로필을 수정했다" 는 이유만으로 죽고, 운영자가 DLQ 에서
+      // 손으로 되살려야 한다. 재시도로 낫는 실패를 사람 일감으로 만드는 것은 분류 실패다.
+      //
+      ProcessOutcome.Retryable(
+        reason = "profile_concurrently_modified",
+        exceptionClass = e.javaClass.name,
+        // 회로에는 세지 않는다 — Keycloak 이 아픈 게 아니라 우리 DB 안의 경합이다.
+        countsTowardCircuit = false,
+      )
     } catch (e: Exception) {
       // 여기가 예전에 비어 있던 자리다. 위 KDoc 참조.
       log.error("outbox 미분류 실패 — DEAD 로 보낸다 id={}", record.id, e)
@@ -225,10 +248,18 @@ class OutboxProcessor(
   private sealed interface ProcessOutcome {
     data object Success : ProcessOutcome
 
-    /** 재시도하면 될 수도 있는 실패. 외부 시스템 사정이므로 회로에도 센다. */
+    /**
+     * 재시도하면 될 수도 있는 실패.
+     *
+     * @property countsTowardCircuit 회로에 실패로 셀 것인가. 회로가 판정하는 것은 **"외부 시스템이
+     *   죽었는가"** 하나뿐이므로([OutboxCircuit]), 우리 DB 안에서 난 경합처럼 외부와 무관한 실패는
+     *   세면 안 된다. 세면 프로필 수정이 몰리는 시간대에 워커 전체가 멈춘다 — 정작 Keycloak 은
+     *   멀쩡한데.
+     */
     data class Retryable(
       val reason: String,
       val exceptionClass: String,
+      val countsTowardCircuit: Boolean = true,
     ) : ProcessOutcome
 
     /**
