@@ -62,6 +62,7 @@ flowchart LR
 
 | 경로 | 화면 | 부르는 API | 무엇을 드러내는가 |
 |---|---|---|---|
+| `/register` | 가입 | `POST /iam/register` | **로그인 없이 쓰는 유일한 화면.** 공개 경로 + CSRF 예외 + 전용 rate limit(§S0) |
 | `/` | 세션 상태 | `GET /iam/debug/whoami` | 세션 유무 · 소속 테넌트 · **alpha 에서는 404 가 정상**(§S3) |
 | `/profile` | 프로필 | `GET/PATCH /iam/profile`, `POST /iam/profile/email-change` | 동기 반영 vs **202 비동기 반영**의 차이 |
 | `/memberships` | 내 멤버십 | `GET /iam/memberships`, `POST /iam/memberships/{t}/accept` | 초대는 **수락해야** 효력이 생긴다 |
@@ -76,6 +77,44 @@ flowchart LR
 
 > 현재 alpha realm 에서 시나리오를 돌릴 수 있는 계정은 **관리자 1개**, 테넌트도 **1개**뿐이다(§4).
 > 아래에서 🔒 표시가 붙은 둘(S10 · S13)만 그 제약에 걸리고, 나머지는 지금 바로 된다.
+
+### S0. 가입 — 로그인보다 앞선 단계
+
+`/register`. **이 콘솔에서 세션 없이 동작하는 유일한 화면**이라, 서버의 공개 경로 설정을
+통째로 검증한다.
+
+| 조작 | 기대 |
+|---|---|
+| 정상 입력 → 가입 | **201** · `onboardingState: PENDING_IDENTITY` · `userRef: null` |
+| 같은 이메일 재요청 | **409** `email_already_registered` |
+| 이메일 형식 오류 · 필수값 누락 | **400** |
+| (10s 내) Keycloak 확인 | **사용자가 실제로 생성**된다 — outbox 워커가 만든다 |
+
+**세션 없이 되는지 확인하는 법** — 브라우저 콘솔에서 쿠키를 아예 빼고 보낸다:
+
+```js
+await fetch('https://<gateway-host>/iam/register',{
+  method:'POST', credentials:'omit',                    // ← 쿠키 미전송 = 미인증
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({email:'…',displayName:'…',firstName:'…',lastName:'…'}),
+})
+```
+
+응답이 **401/403 이 아니라 409(또는 201)** 이면 요청이 IAM 까지 닿았다는 뜻이다 —
+`permitAll` 과 **CSRF 매처 예외**가 둘 다 동작한다는 증거다.
+
+**왜 CSRF 예외인가**: 가입 요청자는 세션도 토큰도 없어 **토큰을 실을 방법 자체가 없다.**
+그리고 CSRF 는 "브라우저가 자동으로 실어 보내는 인증 정보를 공격자가 빌려 쓰는 것"을 막는
+방어인데, 이 경로는 그 인증 정보를 아예 쓰지 않는다. 방어는 **rate limit** 이 맡는다.
+
+> ⚠️ **가입해도 로그인할 수 없다.** 요청 본문에 비밀번호가 없고, IAM 이 만드는 Keycloak
+> 사용자는 credential 없이 `emailVerified=false` 다. **자격증명 설정은 Keycloak 쪽 일**이며
+> 이 콘솔의 기능이 아니다. 시나리오 계정을 만들 때 이 단계를 빠뜨리면 "가입은 됐는데 로그인이
+> 안 된다" 로 막힌다(§4.3).
+
+**201 인 이유**(202 가 아니라): Keycloak 반영은 아직이지만 **IAM 입장에서 프로필 리소스는
+실제로 생성됐다.** 202 를 주면 "아무것도 안 만들어졌다" 는 오해를 준다. 미완성인 것은 신원
+연결이고 그건 `onboardingState` 가 드러낸다.
 
 ### S1. 미인증 접근 → 로그인 이동
 
@@ -271,12 +310,16 @@ btn.click();                                                  // 버킷이 마�
 
 ## 4. ⚠️ 지금 막혀 있는 것 — 계정이 하나뿐이다
 
-alpha realm 의 사용자 8명 중 **시나리오를 돌릴 수 있는 계정은 관리자 1개**다. 나머지는
-부하테스트용·스모크용이라 **역할도 그룹도 비어 있고 용도가 다르다**(그 계정으로 시나리오를
-돌리면 부하 기준선이 오염된다).
+alpha realm 에서 **시나리오를 돌릴 수 있는 계정은 관리자 1개**다. 나머지는 부하테스트용·
+스모크용이라 **역할도 그룹도 비어 있고 용도가 다르다**(그 계정으로 시나리오를 돌리면 부하
+기준선이 오염된다).
 
 이것은 실수가 아니라 설정이다 — `setup-realm.sh` 는 alpha 에서 `CREATE_TEST_USERS="false"`
 로 테스트 계정을 만들지 않는다(로컬 realm 에만 alice/bob/carol 이 있다).
+
+> **2026-07-30 진행분**: S0(가입) 검증으로 `scenario-user` 를 만들었다. 다만 **비밀번호가
+> 없어 아직 로그인할 수 없으므로** 아래 A1~A6 은 여전히 막혀 있다. 자격증명 설정(§4.3 ②)이
+> 남은 유일한 관문이고, 그건 Keycloak 쪽 작업이다.
 
 ### 4.1 그래서 지금 확인할 수 없는 것들
 
@@ -298,11 +341,11 @@ alpha realm 의 사용자 8명 중 **시나리오를 돌릴 수 있는 계정은
 제안하는 최소 구성이다. 이름은 **역할이 드러나게** 짓고 실제 조직·사람 이름을 쓰지 않는다
 (로컬의 alice/bob/carol 과 같은 규칙).
 
-| 계정 | realm role | 소속 | 여는 시나리오 |
-|---|---|---|---|
-| `scenario-user` | 없음 | `demo` | **A1**(관리 API 403) · S6① |
-| `scenario-invitee` | 없음 | 없음(초대만) | **A2**(수락 전/후) · **A3**(부여 지연) |
-| `scenario-multi` | 없음 | `demo` + `demo2` | **A5**(전환·캐시 키) · **A6**(격리) |
+| 계정 | realm role | 소속 | 여는 시나리오 | 상태 |
+|---|---|---|---|---|
+| `scenario-user` | 없음 | `demo` | **A1**(관리 API 403) · S6① | **가입됨**(2026-07-30). 비밀번호 미설정 |
+| `scenario-invitee` | 없음 | 없음(초대만) | **A2**(수락 전/후) · **A3**(부여 지연) | 미생성 |
+| `scenario-multi` | 없음 | `demo` + `demo2` | **A5**(전환·캐시 키) · **A6**(격리) | 미생성 |
 
 | 테넌트 | 용도 |
 |---|---|
@@ -313,22 +356,32 @@ alpha realm 의 사용자 8명 중 **시나리오를 돌릴 수 있는 계정은
 
 ### 4.3 추가 절차
 
+**계정 생성은 이제 콘솔에서 된다**(S0). 다만 **비밀번호는 콘솔이 다루지 않는다.**
+
 ```
-① POST /iam/admin/tenants          {"tenantId":"demo2","displayName":"데모 테넌트 2"}
+① 가입          /register 화면 또는 POST /iam/register
+   → 201 PENDING_IDENTITY, userRef=null
+   → (≤10s) outbox 워커가 Keycloak 사용자 생성
+
+② 비밀번호 설정  ← ⚠️ **Keycloak 관리 콘솔에서 사람이 한다.** 이 단계 없이는 로그인 불가.
+   realm 이 Direct access grants OFF 라 로그인은 브라우저로만 되고,
+   비밀번호는 secret 파일로 관리하며 문서·커밋에 남기지 않는다.
+
+③ 테넌트 생성    POST /iam/admin/tenants   {"tenantId":"demo2","displayName":"데모 테넌트 2"}
    → 201 PENDING → (≤10s) ACTIVE
 
-② Keycloak 에 사용자 생성 + 비밀번호 설정          ← 관리자 콘솔 또는 Admin API
-   ⚠️ realm 이 Direct access grants OFF 라 로그인은 브라우저로만 된다.
-      비밀번호는 secret 파일로 관리하고 문서·커밋에 남기지 않는다.
+④ 초대          POST /iam/admin/tenants/<t>/members  {"userRef":"<sub>","role":"tenant-member"}
+   ⚠️ userRef 는 이메일이 아니라 **Keycloak sub** 다. 콘솔에 사용자 검색이 없으므로
+      Keycloak 관리 콘솔에서 확인한다.
 
-③ POST /iam/admin/tenants/<t>/members  {"userRef":"<sub>","role":"member"}
-   ⚠️ userRef 는 이메일이 아니라 **Keycloak sub** 다
-
-④ POST /iam/memberships/<t>/accept     ← 초대받은 당사자가 수락
-⑤ 소속이 게이트에 반영되기까지 최대 5분(§0.4)
+⑤ 수락          POST /iam/memberships/<t>/accept     ← 초대받은 당사자가 수락
+⑥ 소속이 게이트에 반영되기까지 최대 5분(§0.4)
 ```
 
-> `scenario-invitee` 는 **③ 까지만** 하고 ④를 미뤄두면 A2 의 "수락 전" 상태를 그대로 쓸 수 있다.
+> `scenario-invitee` 는 **④ 까지만** 하고 ⑤를 미뤄두면 A2 의 "수락 전" 상태를 그대로 쓸 수 있다.
+
+> **`userRef` 가 ①의 응답에 없다는 점을 주의**한다. 가입 직후엔 항상 `null` 이고, outbox 가
+> 신원을 연결한 뒤에야 채워진다. ④에 쓸 sub 는 **①의 응답이 아니라 Keycloak** 에서 가져온다.
 
 ---
 
@@ -341,3 +394,9 @@ alpha realm 의 사용자 8명 중 **시나리오를 돌릴 수 있는 계정은
 - **브라우저 밖 경로는 이 콘솔로 확인할 수 없다.** 세션 쿠키가 브라우저 안에 있어 `curl` 로
   같은 요청을 만들 수 없다. 게이트 strip 처럼 "브라우저가 먼저 막는" 것들은 **단위 테스트가
   최종 근거**다.
+- **`onboardingState` 의 `PENDING_IDENTITY` → `ACTIVE` 전이는 아직 화면으로 못 봤다.**
+  가입 응답에서 `PENDING_IDENTITY` 를, Keycloak 에서 사용자 생성을 각각 확인했지만, 전이
+  결과는 **그 계정의 프로필 화면**에서만 보이고 그러려면 로그인이 필요하다(비밀번호 미설정).
+  Keycloak 에 사용자가 생겼으니 전이도 됐을 것이라는 건 **추론이지 관찰이 아니다.**
+- **공개 가입 엔드포인트가 ingress 에 열려 있다.** 인증이 없고 방어는 rate limit 뿐이다.
+  검증용 realm 이라 수용하지만, 운영 성격의 realm 이라면 별도 판단이 필요하다.
