@@ -18,15 +18,26 @@ export function ProblemAlert({ error }: { error: unknown }) {
     return <div className="alert">알 수 없는 오류: {String(error)}</div>
   }
   const known = error.reasonCode ? MESSAGES[error.reasonCode] : undefined
+  const retry = error.retryAfterSeconds
   return (
     <div className="alert">
       <strong>
         {error.status} {error.problem.title ?? ''}
       </strong>
       <div>{known ?? error.problem.detail ?? '(서버가 사유를 주지 않았습니다)'}</div>
+      {/*
+        429 는 본문이 비어 있어 위 줄이 "본문 없음" 밖에 못 말한다. 사용자에게 쓸모 있는
+        유일한 정보가 이 헤더값이다 — 서버가 이미 계산해 준 것을 버리지 않는다.
+      */}
+      {retry !== undefined && (
+        <div>
+          {retry > 0 ? `${retry}초 후 다시 시도해 주세요.` : '지금 다시 시도할 수 있습니다.'}
+        </div>
+      )}
       <small>
         reasonCode: {error.reasonCode ?? '(없음)'}
         {error.problem.traceId ? ` · traceId: ${error.problem.traceId}` : ''}
+        {retry !== undefined ? ` · Retry-After: ${retry}s` : ''}
       </small>
     </div>
   )

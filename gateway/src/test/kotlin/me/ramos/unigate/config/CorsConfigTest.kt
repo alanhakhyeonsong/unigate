@@ -72,6 +72,12 @@ class CorsConfigTest :
           (resolved?.allowedHeaders?.contains("X-Requested-Tenant")) shouldBe true
           (resolved?.allowedHeaders?.contains("X-Tenant-Id")) shouldBe false
         }
+
+        then("`Retry-After` 가 응답 노출 목록에 있다 — 없으면 FE 가 값을 못 읽는다") {
+          // 요청 허용 목록(allowedHeaders)과 **다른 목록**이다. 여기 없으면 429 는 도착하는데
+          // res.headers.get('Retry-After') 만 조용히 null 이 된다(RetryAfterFilter 무력화).
+          (resolved?.exposedHeaders?.contains("Retry-After")) shouldBe true
+        }
       }
     }
   })
