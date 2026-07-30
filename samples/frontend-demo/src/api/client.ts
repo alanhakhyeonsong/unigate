@@ -16,16 +16,26 @@ export interface RequestOptions {
   tenant?: string
   /** 위조 실험용 원시 헤더. 일반 화면에서는 쓰지 않는다. */
   rawHeaders?: Record<string, string>
+  /**
+   * CSRF 토큰을 붙이지 않는다 — **미인증 상태에서 부르는 공개 POST 전용**(가입).
+   *
+   * 서버가 `/iam/register` 를 CSRF 매처에서 제외했기 때문에 토큰이 필요 없다. 근거는
+   * `SecurityConfig.csrfProtectionMatcher()` — 가입 요청자는 세션도 토큰도 없어서
+   * **토큰을 실을 방법 자체가 없다.**
+   *
+   * ⚠️ 편의 스위치가 아니다. 인증이 필요한 경로에 이걸 붙이면 서버가 403 으로 막는다.
+   */
+  skipCsrf?: boolean
 }
 
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, tenant, rawHeaders } = options
+  const { method = 'GET', body, tenant, rawHeaders, skipCsrf = false } = options
 
   const headers: Record<string, string> = { Accept: 'application/json', ...rawHeaders }
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   if (tenant) headers['X-Requested-Tenant'] = tenant
 
-  if (method !== 'GET') {
+  if (method !== 'GET' && !skipCsrf) {
     // ⚠️ 비동기다. cross-origin 배포에서는 쿠키를 못 읽어 게이트웨이에서 받아 오기 때문이다
     // (`api/csrf.ts`). 헤더 이름도 서버가 알려준 것을 그대로 쓴다.
     const csrf = await ensureCsrfToken()

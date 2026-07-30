@@ -9,6 +9,7 @@ import { Memberships } from './pages/Memberships'
 import { OrderDetail } from './pages/OrderDetail'
 import { Orders } from './pages/Orders'
 import { Profile } from './pages/Profile'
+import { Register } from './pages/Register'
 
 function TenantNav() {
   const { tenantId } = useParams<{ tenantId: string }>()
@@ -68,6 +69,8 @@ export function App() {
           <Link to="/memberships">멤버십</Link>
           <Link to="/admin">관리자</Link>
           <Link to="/diagnostics">진단</Link>
+          {/* 가입만 **로그인 없이** 열린다. 다른 링크는 누르는 순간 로그인으로 튕긴다. */}
+          <Link to="/register">가입</Link>
           <TenantNav />
           <LogoutForm />
         </nav>
@@ -79,6 +82,7 @@ export function App() {
           <Route path="/memberships" element={<Memberships />} />
           <Route path="/admin" element={<Admin />} />
           <Route path="/diagnostics" element={<Diagnostics />} />
+          <Route path="/register" element={<Register />} />
           <Route path="/t/:tenantId/orders" element={<Orders />} />
           <Route path="/t/:tenantId/orders/:id" element={<OrderDetail />} />
         </Routes>

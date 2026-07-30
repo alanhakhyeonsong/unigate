@@ -1,5 +1,29 @@
 import { request } from './client'
-import type { EmailChange, Membership, MyMembership, Profile, TenantSummary, WhoAmI } from './types'
+import type {
+  EmailChange,
+  Membership,
+  MyMembership,
+  Profile,
+  RegisterRequest,
+  Registration,
+  TenantSummary,
+  WhoAmI,
+} from './types'
+
+/**
+ * 가입 — **인증이 없는 유일한 IAM 유스케이스.**
+ *
+ * 토큰이 아직 없는 상태라 인증을 요구할 수 없고(D4 보강), 그래서 CSRF 도 예외다
+ * (`SecurityConfig.csrfProtectionMatcher()`). 방어는 게이트웨이의 **전용 rate limit** 이
+ * 맡는다(`RateLimitConfig.registrationRateLimiter`).
+ *
+ * ⚠️ **가입만으로는 로그인할 수 없다.** 요청 본문에 비밀번호가 없고, IAM 이 만드는 Keycloak
+ * 사용자는 credential 없이 `emailVerified=false` 다. 자격증명 설정은 Keycloak 쪽 일이다.
+ */
+export const publicApi = {
+  register: (body: RegisterRequest) =>
+    request<Registration>('/iam/register', { method: 'POST', body, skipCsrf: true }),
+}
 
 export const iam = {
   whoami: () => request<WhoAmI>('/iam/debug/whoami'),
