@@ -372,6 +372,39 @@ Keycloak 은 토큰 발급 때마다 protocol mapper 를 다시 실행하므로 
 > 성질이 위험으로 뒤집힌다 — 해제해도 최대 5분간 통과한다(A4). 자동 복구가 보안 속성을
 > 없애주지는 않는다. 상세는 [`docs/learning/33`](../learning/33-claim-propagation-delay.md) §4.6.
 
+### S19. 초대는 **수락 전까지 아무 효력이 없다**
+
+**조작** 초대받았지만 **수락하지 않은** 계정으로 로그인 → `/memberships` 확인 후 접근 시도
+
+실측(`scenario-invitee`, `demo` 에 INVITED · `demo2` 는 초대조차 없음):
+
+| 요청 | 결과 |
+|---|---|
+| `GET /iam/memberships` | 200 · `[{tenantId:"demo", status:"INVITED", joinedAt:null}]` |
+| `GET /api/orders` + `X-Requested-Tenant: demo` | **403** `요청한 테넌트에 소속되어 있지 않습니다` |
+| `GET /api/orders` + `X-Requested-Tenant: demo2` | **403** — **완전히 같은 응답** |
+| Keycloak `/tenants/demo` group | **없다** (수락한 `scenario-user` 만 들어 있다) |
+
+**증거는 두 번째와 세 번째 줄이 같다는 것이다.** 초대받은 `demo` 와 초대조차 없는 `demo2` 가
+게이트에는 **구별되지 않는다** — 둘 다 "claim 에 없다" 는 하나의 사실일 뿐이다. 즉
+**초대는 게이트에 아무 흔적도 남기지 않는다.** Keycloak group 에도 들어가지 않는다(수락해야
+outbox 가 넣는다).
+
+> 설계 의도 그대로다 — `MembershipService` 는 **초대(INVITED)를 투영하지 않는다**:
+> "아직 멤버가 아니다. claim 에 실리면 안 된다."
+
+**화면과 차단이 어긋나는 구간은 두 가지 형태가 있다.** 둘을 헷갈리면 원인을 잘못 짚는다:
+
+| | S19 (여기) | S18 |
+|---|---|---|
+| 상태 | **수락 전** — INVITED | **수락 후** — ACTIVE |
+| `/iam/memberships` | 보인다 (INVITED) | 보인다 (ACTIVE) |
+| 접근 | 403 | 403 |
+| **기다리면?** | **영원히 안 열린다** — 수락이 필요하다 | **약 4분 뒤 열린다** |
+
+`/iam/memberships` 의 `status` 를 봐야 갈린다. **둘 다 "목록엔 있는데 접근은 403"** 이라
+증상만으로는 구분되지 않는다.
+
 ---
 
 ## 3. 실패 신호 읽는 법
@@ -399,11 +432,15 @@ Keycloak 은 토큰 발급 때마다 protocol mapper 를 다시 실행하므로 
 
 ### ✅ 2026-07-30 — 시나리오 계정·테넌트를 갖췄다
 
-| 계정 | 역할 | 비밀번호 | 초대 상태 |
+| 계정 | 역할 | 비밀번호 | 멤버십 상태 |
 |---|---|---|---|
-| `scenario-user` | 없음(비관리자) | ✅ | `demo` **INVITED** |
-| `scenario-invitee` | 없음 | ❌ | `demo` **INVITED** — **일부러 수락하지 않는다**(A2 재료) |
+| `scenario-user` | 없음(비관리자) | ✅ | `demo` **ACTIVE**(수락 완료) |
+| `scenario-invitee` | 없음 | ✅ | `demo` **INVITED** — **계속 이대로 둔다**(S19 의 살아 있는 재료) |
 | `scenario-multi` | 없음 | ❌ | `demo` · `demo2` 둘 다 **INVITED** |
+
+> `scenario-invitee` 를 수락시키지 않는 것이 **의도**다. "초대만 있고 수락은 없는" 상태를 가진
+> 계정이 하나 있어야 S19 를 언제든 재연할 수 있다. 수락해 버리면 그 상태를 만들려고 또 다른
+> 계정을 만들어야 한다.
 
 테넌트는 `demo` · `demo2` 두 개다. 두 테넌트 모두 Keycloak group 까지 반영됐다
 (`/tenants/demo`, `/tenants/demo2`).
@@ -420,7 +457,7 @@ Keycloak 은 토큰 발급 때마다 protocol mapper 를 다시 실행하므로 
 | # | 시나리오 | 무엇을 증명하는가 | 남은 관문 |
 |---|---|---|---|
 | ~~A1~~ | ~~비관리자의 관리 API 403~~ | — | ✅ **완료** → S16 으로 옮겼다 |
-| A2 | **초대 → 수락** 흐름 | 초대는 수락해야 효력이 생긴다. 수락 전/후 접근 차이 | `scenario-invitee` 를 **INVITED 로 둔 채** 접근을 시도해 보면 된다. 비밀번호만 필요 |
+| ~~A2~~ | ~~초대 → 수락 흐름~~ | — | ✅ **완료** → S19 로 옮겼다. `scenario-invitee` 는 계속 **INVITED 로 둔다** |
 | ~~A3~~ | ~~claim 전파 지연(부여)~~ | — | ✅ **완료** → S18 로 옮겼다. **재로그인은 필요 없었다** |
 | A4 | **멤버 해제 후 지연(회수)** | 해제해도 토큰 만료까지 통과한다 | `scenario-user` 수락 후 관리자가 해제 → 그 세션으로 계속 접근 |
 | A5 | **다중 테넌트 전환 · 캐시 키(S13)** | 탭 두 개로 서로 다른 테넌트 | `scenario-multi` 가 양쪽을 수락해야 한다 |
