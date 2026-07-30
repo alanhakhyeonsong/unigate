@@ -183,6 +183,60 @@ sed -n '525,535p' docs/IAM_PLATFORM_DECISION.md
 로그아웃 맥락으로 적혀 있지만 **같은 문제**다. 원인이 하나이기 때문이다 —
 stateless JWT 는 발급 후 취소할 방법이 없다.
 
+### 4.5 반대 방향도 같다 — **부여**도 재로그인 전까지 반영되지 않는다 (alpha 실측)
+
+여기까지는 전부 **회수**(revoke) 이야기였다. 그런데 원인이 "토큰에 박제된 발급 시점 상태" 라면
+방향은 상관없어야 한다. alpha 에서 **부여**(grant) 쪽을 실측했다.
+
+`nativeadmin` 에게 `demo` 테넌트를 만들어 주고(① 테넌트 생성 → ② 멤버 추가 → ③ 초대 수락),
+outbox 가 Keycloak group 까지 반영한 상태에서 시작한다. Admin API 로 실물을 먼저 확인했다:
+
+```
+=== realm group 최상위 ===
+  /tenants  (subGroupCount=1)
+  /unigate-users  (subGroupCount=0)
+
+=== /tenants 하위 ===
+  /tenants/demo
+    멤버 1명
+      - nati***  sub=fa17b8aa-…   (username·sub 은 실제 계정이라 마스킹했다)
+```
+
+**여기까지 해도 접근은 열리지 않는다.** 2026-07-29 기록(같은 계정·같은 게이트웨이, 재로그인 전):
+
+```
+GET /api/orders                               -> 403
+GET /api/orders + X-Requested-Tenant: acme    -> 403
+GET /iam/memberships                          -> 200  []
+```
+
+사용자가 **재로그인한 뒤**, 브라우저 세션에서 같은 요청을 다시 보냈다
+(FE 콘솔 페이지에서 `fetch(..., {credentials:'include'})`):
+
+| 요청 | 재로그인 후 |
+|---|---|
+| `GET /iam/profile` | 200 · `userRef=fa17b8aa-…` (위 group 멤버의 sub 와 일치) |
+| `GET /iam/memberships` | 200 · `[{tenantId:"demo", role:"tenant-admin", status:"ACTIVE"}]` |
+| `GET /api/orders` (헤더 없이) | **403** — 그대로다 |
+| `GET /api/orders` + `X-Requested-Tenant: demo` | **200 `[]`** ← 열렸다 |
+| `GET /api/orders` + `X-Requested-Tenant: acme` | **403** `요청한 테넌트에 소속되어 있지 않습니다` |
+| `GET /api/echo` + `X-Requested-Tenant: demo` | 200 · 다운스트림이 받은 헤더에 `x-tenant-id: demo` |
+
+**바뀐 것은 토큰뿐이다.** DB 도 Keycloak group 도 재로그인 전후로 동일했다. `/iam/memberships`
+가 재로그인 **전에 이미** `demo` 를 보여줬다는 점이 이 지연의 성격을 그대로 드러낸다 —
+IAM 은 DB 를 읽으니 즉시 알고, 게이트는 claim 만 보니 모른다. §3 에서 말한
+**"화면과 차단이 어긋나는 구간"** 이 실제로 이렇게 생긴다.
+
+두 개의 403 을 나란히 둔 것이 이 실측의 핵심이다:
+
+| 403 | 거부 주체 | 의미 |
+|---|---|---|
+| 헤더 없이 | **다운스트림** | 테넌트 범위 자원인데 범위가 없다. 소속이 하나뿐이어도 추측해 채우지 않는다 |
+| `acme` 주장 | **게이트웨이** `TenantGateFilter` | claim 에 없다. 다운스트림에 닿기도 전에 끊긴다 |
+
+`acme` 의 403 이 없으면 `demo` 의 200 은 "게이트가 그냥 다 열렸다" 와 구분되지 않는다.
+**통과 사례만으로는 인가가 동작한다는 증거가 못 된다** — 거절 사례가 같이 있어야 한다.
+
 ## 5. 함정 / 실패 모드
 
 ### 5.1 "해제했는데 아직 접근된다"를 버그로 신고하게 된다

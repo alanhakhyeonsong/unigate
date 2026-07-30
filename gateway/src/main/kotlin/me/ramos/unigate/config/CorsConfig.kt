@@ -58,6 +58,9 @@ class CorsConfig {
         // CSRF 토큰 헤더와 테넌트 주장 헤더가 여기 없으면 preflight 에서 막힌다.
         // `X-Tenant-Id` 는 **넣지 않는다** — 클라이언트가 보낼 값이 아니다(게이트가 주입한다).
         allowedHeaders = ALLOWED_HEADERS
+        // 요청 헤더(위)와 **응답 헤더(아래)는 별개 목록**이다. 아래가 없으면 429 는 도착하는데
+        // `Retry-After` 만 JS 에서 사라진다.
+        exposedHeaders = EXPOSED_HEADERS
         maxAge = PREFLIGHT_CACHE_SECONDS
       }
     source.registerCorsConfiguration("/**", config)
@@ -72,6 +75,20 @@ class CorsConfig {
      * `X-Requested-Tenant` — 클라이언트의 테넌트 **주장**(검증은 게이트가 한다, Phase 9f).
      */
     val ALLOWED_HEADERS = listOf("Content-Type", "Accept", "X-XSRF-TOKEN", "X-Requested-Tenant")
+
+    /**
+     * **응답** 헤더 중 JS 에 보여줄 것.
+     *
+     * cross-origin 에서 브라우저가 스크립트에 노출하는 응답 헤더는 CORS-safelisted 7개
+     * (`Cache-Control` `Content-Language` `Content-Length` `Content-Type` `Expires`
+     * `Last-Modified` `Pragma`)뿐이다. `Retry-After` 는 거기 없다.
+     *
+     * ⚠️ 빠뜨렸을 때의 증상이 고약하다 — 응답은 429 로 정상 도착하고 헤더도 실제로 붙어 있는데
+     * `res.headers.get('Retry-After')` 만 **null** 이다. 에러도 경고도 없다. same-origin 인
+     * 로컬(Vite dev proxy)에서는 잘 읽히므로 **alpha 같은 별도 호스트 배포에서만** 드러난다.
+     * `RetryAfterFilter` 가 값을 계산해 붙여도 이 목록이 없으면 아무도 못 본다.
+     */
+    val EXPOSED_HEADERS = listOf("Retry-After")
 
     /** preflight 캐시 1시간. 매 요청마다 OPTIONS 왕복이 붙는 것을 막는다. */
     const val PREFLIGHT_CACHE_SECONDS = 3600L
