@@ -2,10 +2,12 @@ package me.ramos.unigate.iam.adapter.jpaOut
 
 import me.ramos.unigate.iam.adapter.jpaOut.entity.UserProfileEntity
 import me.ramos.unigate.iam.adapter.jpaOut.repository.UserProfileJpaRepository
+import me.ramos.unigate.iam.application.user.port.outbound.ProfileConcurrentlyModifiedException
 import me.ramos.unigate.iam.application.user.port.outbound.UserProfileRepositoryPort
 import me.ramos.unigate.iam.domain.shared.vo.UserRef
 import me.ramos.unigate.iam.domain.user.model.UserProfile
 import me.ramos.unigate.iam.domain.user.vo.ConsentRecord
+import org.springframework.dao.OptimisticLockingFailureException
 import org.springframework.stereotype.Component
 import java.time.Instant
 
@@ -31,6 +33,24 @@ import java.time.Instant
  * 그래서 **`userRef` 가 있으면 그것으로 먼저 찾는다.** `userRef` 는 Keycloak `sub` 이고 불변이라
  * 식별자로 옳다. 없는 경우(가입 대기 중 프로필)에만 email 로 되돌아간다 — 그 상태에서는
  * email 이 유일한 단서다.
+ *
+ * ## `save` 가 아니라 `saveAndFlush` 인 이유 (낙관적 락의 실효성이 여기 달려 있다)
+ * 이미 영속 상태인 엔티티에 `save` 를 부르면 Hibernate 는 **아무것도 즉시 하지 않는다.** 실제
+ * `UPDATE` 는 트랜잭션 커밋 시점의 flush 에서 나가고, 낙관적 락 위반도 그때 터진다.
+ *
+ * 그 시점은 **유스케이스 밖**이다. 즉 아래 두 가지가 동시에 무너진다:
+ *
+ * | | 커밋 시점에 터질 때 | `saveAndFlush` 로 즉시 터질 때 |
+ * |---|---|---|
+ * | 워커의 예외 분류 | `attempt()` 의 `try` 를 이미 빠져나가 **분류되지 못한다** | `catch` 가 정상적으로 잡는다 |
+ * | 유스케이스의 뒷부분 | 감사까지 다 실행된 뒤 롤백된다 | 변경이 없었으므로 감사도 남지 않는다 |
+ *
+ * 특히 첫 줄이 위험하다 — 분류되지 못한 예외는 `REQUIRES_NEW` 트랜잭션을 롤백시키고, 그
+ * 롤백에는 **클레임과 attempts 증가도 포함**된다. P9b 가 고쳤던 무한 재시도 루프가 그대로
+ * 되살아난다(`OutboxProcessor` KDoc 의 "남아 있는 한계" 가 말하는 경로다).
+ *
+ * flush 를 앞당기는 대가는 크지 않다. 어차피 커밋 때 나갈 `UPDATE` 를 조금 먼저 보낼 뿐이고,
+ * 이 유스케이스들은 프로필 한 건만 다룬다.
  */
 @Component
 class JpaUserProfileAdapter(
@@ -41,7 +61,11 @@ class JpaUserProfileAdapter(
       profile.userRef?.let { repository.findByUserRef(it.value) }
         ?: repository.findByEmail(profile.email)
     val entity = existing?.apply { applyFrom(profile) } ?: profile.toNewEntity()
-    return repository.save(entity).toModel()
+    return try {
+      repository.saveAndFlush(entity).toModel()
+    } catch (e: OptimisticLockingFailureException) {
+      throw ProfileConcurrentlyModifiedException(e)
+    }
   }
 
   override fun findByEmail(email: String): UserProfile? = repository.findByEmail(email)?.toModel()

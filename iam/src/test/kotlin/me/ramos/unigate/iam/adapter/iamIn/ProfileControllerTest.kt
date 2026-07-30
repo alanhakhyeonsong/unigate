@@ -11,6 +11,7 @@ import me.ramos.unigate.iam.application.user.port.inbound.AcceptConsentInPort
 import me.ramos.unigate.iam.application.user.port.inbound.ChangeMyEmailInPort
 import me.ramos.unigate.iam.application.user.port.inbound.GetMyProfileInPort
 import me.ramos.unigate.iam.application.user.port.inbound.UpdateMyProfileInPort
+import me.ramos.unigate.iam.application.user.port.outbound.ProfileConcurrentlyModifiedException
 import me.ramos.unigate.iam.application.user.service.ConsentVersionMismatchException
 import me.ramos.unigate.iam.application.user.service.ProfileNotFoundException
 import me.ramos.unigate.iam.config.IamSecurityConfig
@@ -181,6 +182,27 @@ class ProfileControllerTest {
       .andExpect(jsonPath("$.reasonCode").value("consent_version_mismatch"))
       // 이 필드가 있어야 클라이언트가 한 번의 왕복으로 재시도할 수 있다.
       .andExpect(jsonPath("$.currentTosVersion").value("v1"))
+  }
+
+  /**
+   * 동시 수정 충돌이 **500 이 아니라 409** 로 나가는지 고정한다.
+   *
+   * 이 매핑이 없으면 낙관적 락 예외가 그대로 올라가 500 이 된다. 사용자에게는 "서버가 고장났다"
+   * 로 보이지만 실제로는 **그대로 다시 보내면 성공하는** 상황이라, 클라이언트가 취할 행동이
+   * 완전히 달라진다.
+   */
+  @Test
+  fun `다른 요청이 먼저 프로필을 바꿨으면 500 이 아니라 409 다`() {
+    every { updateMyProfileInPort.update(any()) } throws ProfileConcurrentlyModifiedException()
+
+    mockMvc
+      .perform(
+        patch("/iam/profile")
+          .with(callerToken())
+          .contentType(MediaType.APPLICATION_JSON)
+          .content("""{"displayName":"늦게 도착한 변경"}"""),
+      ).andExpect(status().isConflict)
+      .andExpect(jsonPath("$.reasonCode").value("profile_modified_concurrently"))
   }
 
   @Test

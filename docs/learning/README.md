@@ -48,6 +48,8 @@
 | [36](36-conditional-on-property.md) | `@ConditionalOnProperty` 와 안전 기본값 | 5 · 8d | 학습중 | 어려운 건 문법이 아니라 **`matchIfMissing` 의 방향** — 빠뜨렸을 때 무엇이 선택되는가 |
 | [37](37-vt-pinning-measurement.md) | VT pinning 실측 — 안 나온 것을 근거로 삼기 | 8 | 학습중 | pinning 0건. 단 **플래그가 보고한다는 것부터 증명**해야 0건이 근거가 된다 |
 | [38](38-reactor-coroutine-boundary.md) | Reactor ↔ Coroutine 경계 — `mono { }` 와 `await*` | 1~9 | 학습중 | 방향마다 도구가 다르다. **구독 안 한 `mono { }` 는 예외조차 사라진다** |
+| [39](39-optimistic-lock-and-flush-timing.md) | 낙관적 락 — 막는 것은 `@Version` 이 아니라 flush 시점 | 8+ | 학습중 | 커밋 때 터지는 예외는 유스케이스 **밖**이라 아무도 못 잡는다. 워커가 미분류로 두면 정상 지시가 DEAD 가 된다 |
+| [40](40-fail-closed-cost-reproduced.md) | fail-closed 의 대가를 문장에서 관찰로 | 8g | 학습중 | 정상 경로에서 fail-open 과 **결과가 같아서**, 고장내지 않으면 정책이 뒤집혀도 모른다. 워커까지 멈춘다 |
 
 상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
 
@@ -103,6 +105,11 @@
 - [x] **fine 인가 (자원 소유권)** — 검사를 잘 하는 것보다 검사가 필요 없게 만드는 편이 안전하다 → [20](20-caller-identity-and-idor-free-design.md)
 - [x] **Kotlin 인라인 value class 와 Spring DI** — 도메인 VO 에는 맞고 **주입 대상에는 못 쓴다** → [20](20-caller-identity-and-idor-free-design.md) §5 함정 1
 - [x] **감사 스트림의 트랜잭션 경계** — fail-open(GW) vs fail-closed(IAM) → [21](21-two-audit-streams-and-transaction-boundary.md)
+      - [x] **그 대가를 실제로 재현했다** — `audit_log` 에 INSERT 거부 트리거를 걸어 가입이 정말 멈추는지 확인.
+            프로필·outbox 지시·감사 **셋 다** 롤백된다. 예상 밖이었던 것은 **워커도 멈춘다**는 것과,
+            워커 경로에서는 `UnexpectedRollbackException` 만 나와 **원인이 예외에 남지 않는다**는 것 → [40](40-fail-closed-cost-reproduced.md)
+- [x] **프로필 동시 수정 (낙관적 락)** — 도메인의 "진행 중이면 거절" 검사는 읽은 시점 값이라 경합에 뚫린다.
+      `@Version` 만으로는 부족했고 **flush 시점**(`saveAndFlush`)까지 통제해야 워커가 예외를 분류할 수 있다 → [39](39-optimistic-lock-and-flush-timing.md)
 - [x] **outbox 를 쓰지 않을 때를 아는 것** — 단일 DB 쓰기에 얹으면 패턴의 cargo cult → [21](21-two-audit-streams-and-transaction-boundary.md) §2
 - [x] **VT pinning** — 측정했다. HikariCP 를 커넥션 2개로 조여 400 동시성을 걸어도 **0건**이고, 그 0건이 근거가 되도록 `synchronized` 반례를 먼저 돌려 플래그가 보고한다는 것을 증명했다 → [37](37-vt-pinning-measurement.md)
       - [x] 남은 조각도 닫았다 — `ServiceAccountTokenProviderConcurrencyTest` 가 **그 락을 실제로 지난다.**
