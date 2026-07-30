@@ -9,6 +9,9 @@ const MESSAGES: Record<string, string> = {
   email_change_in_progress: '이미 처리 중인 이메일 변경이 있습니다.',
   email_unchanged: '현재 이메일과 동일합니다.',
   identity_not_ready: '가입이 아직 완료되지 않았습니다.',
+  // 계정 열거 관점에서는 논쟁적이지만, 알려주지 않으면 가입 UX 가 막힌다.
+  // 실질 방어는 게이트웨이의 rate limit 이다(RegisterController KDoc).
+  email_already_registered: '이미 가입된 이메일입니다.',
   order_not_found: '주문을 찾을 수 없습니다. (남의 테넌트 자원도 같은 응답입니다)',
 }
 

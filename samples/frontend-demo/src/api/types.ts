@@ -76,3 +76,23 @@ export interface TenantSummary {
   status: string
   maxUsers?: number | null
 }
+
+// 출처: iam/.../iamIn/RegisterController.kt (RegisterRequest)
+// ⚠️ **비밀번호 필드가 없다.** 자격증명은 IAM 이 다루지 않는다(Keycloak 소관).
+export interface RegisterRequest {
+  email: string
+  displayName: string
+  firstName: string
+  lastName: string
+  locale?: string
+  tosVersion?: string
+}
+
+// 출처: iam/.../iamIn/RegisterController.kt (RegisterResponse)
+export interface Registration {
+  email: string
+  /** 가입 직후엔 `PENDING_IDENTITY`. outbox 가 Keycloak 사용자를 만든 뒤 `ACTIVE` 가 된다. */
+  onboardingState: string
+  /** **가입 직후에는 항상 null 이다.** 신원 연결이 끝나야 채워진다 — 이 값으로 판단하지 않는다. */
+  userRef: string | null
+}

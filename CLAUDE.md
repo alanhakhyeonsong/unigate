@@ -21,6 +21,7 @@
 | `docs/PROJECT_SETUP_PLAN.md` | 설계 결정과 근거(SSOT) | ✅ |
 | `docs/IAM_PLATFORM_DECISION.md` | IAM 플랫폼 확장 결정(Phase 8 착수 전 게이트) | ✅ |
 | `docs/KEYCLOAK_REALM_SETUP.md` | Keycloak realm 구성·검증·런북 | ✅ |
+| `docs/ALPHA_CONSOLE_SCENARIOS.md` | alpha 검증 콘솔 **재연 시나리오 가이드**(무엇을 어디까지 확인할 수 있는가) | ✅ |
 | `docs/learning/` | **개인 학습 문서** (§2) | ✅ |
 | `loadtest/README.md` | k6 부하테스트 **실행 가이드** | ✅ |
 | `loadtest/SCENARIOS.md` | 시나리오 정의 + **측정 기록**(회차별) | ✅ |
@@ -266,13 +267,16 @@ FE가 토큰을 보게 되는 순간 BFF를 쓰는 이유가 사라진다.
 | **캐시 키에 테넌트를 빼먹는다** | 다른 테넌트 목록이 그대로 보이고 **네트워크 요청조차 안 나간다** | 테넌트가 헤더로만 전달돼 URL 이 같다. 서버가 격리해도 클라이언트 캐시가 무너뜨린다 → queryKey 에 테넌트 포함 |
 | **로그인 후 착지가 게이트웨이 루트** | **로그인은 성공하는데 FE 가 안 뜬다.** 세션도 정상이고 로그도 깨끗해 원인을 Keycloak 으로 오해한다 | 성공 핸들러 기본 착지가 `/` 다. Keycloak 의 `redirectUris` 는 **인가 코드 배달 주소**일 뿐 착지가 아니다 → `unigate.frontend.base-uri` 주입. **로그아웃도 같은 값**을 봐야 한다 |
 | **CSRF 쿠키를 FE 가 못 읽는다** | **GET 은 전부 200 인데 쓰기만 403** (로그아웃·프로필 수정 등 전부). 읽기가 되니 인증 문제로 안 보인다 | `XSRF-TOKEN` 에 `Domain` 이 없어 host-only. **전송(SameSite)은 site 기준, 읽기(`document.cookie`)는 host 기준**이라 `SESSION` 만 실린다 → `GET /csrf` 로 받아 간다. 접근 제어는 **CORS 허용 목록**이 대신하므로 그 목록이 곧 방어선이다 |
+| **응답 헤더를 FE 가 못 읽는다** (Phase 9h) | 서버는 헤더를 붙였고 응답도 정상 도착하는데 `res.headers.get(...)` 만 **null**. 에러도 경고도 없다. **로컬(dev proxy)에서는 잘 읽혀** 분리 배포에서만 드러난다 | cross-origin 에서 스크립트에 노출되는 응답 헤더는 **CORS-safelisted 7개뿐**(`Cache-Control` `Content-Language` `Content-Length` `Content-Type` `Expires` `Last-Modified` `Pragma`). 그 밖은 서버가 `exposedHeaders` 로 **명시 노출**해야 한다 → `CorsConfig.EXPOSED_HEADERS`. **요청 허용 목록(`allowedHeaders`)과 다른 목록**이다 |
 
 > **CSRF 세 조각은 하나라도 빠지면 조용히 실패한다.** ①이 없으면 토큰이 세션에만 있어 클라이언트가
 > 읽을 수 없고, ②가 없으면 쿠키의 원본 값과 서버가 기대하는 마스킹 값이 어긋나며, ③이 없으면
 > 쿠키 자체가 응답에 실리지 않는다. **셋 다 증상이 "403" 하나로 같아서** 어느 조각이 빠졌는지
 > 응답만 봐서는 구분되지 않는다 — `org.springframework.security.web.server.csrf` 를 TRACE 로 켜야 갈린다.
 
-> 위 네 줄은 **샘플 FE 를 실제로 붙이며 겪은 것**이다. 상세와 실측은 `docs/learning/26`.
+> **CSRF 쿠키** 까지의 네 줄은 **샘플 FE 를 실제로 붙이며 겪은 것**이다. 상세와 실측은 `docs/learning/26`.
+> 마지막 **응답 헤더** 줄은 Phase 9h 에서 `Retry-After` 로 드러났다(PR #50) — 뿌리가 같다.
+> **분리 배포에서만 보이는 것은 "동작"이 아니라 "가시성"** 이고, 그래서 서버 로그에는 아무 흔적이 없다.
 >
 > **XHR 리다이렉트가 왜 헷갈리는가**: 302 응답을 `fetch`가 그대로 따라가 Keycloak 로그인 페이지를 요청하고,
 > 그 응답이 CORS 정책에 걸린다. 브라우저 콘솔에는 "CORS 에러"만 찍혀 **진짜 원인(미인증)이 가려진다.**
