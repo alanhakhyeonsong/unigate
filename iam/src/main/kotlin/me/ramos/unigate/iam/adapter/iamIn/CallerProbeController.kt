@@ -1,7 +1,7 @@
 package me.ramos.unigate.iam.adapter.iamIn
 
 import jakarta.servlet.http.HttpServletRequest
-import org.springframework.context.annotation.Profile
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.security.oauth2.jwt.Jwt
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken
 import org.springframework.web.bind.annotation.GetMapping
@@ -9,10 +9,33 @@ import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
 
 /**
- * local 전용 진단 프로브 — **GW → IAM token relay 가 실제로 이어지는지** 눈으로 확인한다 (Phase 8f).
+ * 호출자 진단 프로브 — **GW → IAM token relay 가 실제로 이어지는지** 눈으로 확인한다 (Phase 8f).
  *
- * `ThreadProbeController`(VT 확인)와 같은 성격이다. 기능이 아니라 검증·학습 목적이며
- * `@Profile("local")` 이라 다른 프로파일에는 라우트 자체가 존재하지 않는다.
+ * 기능이 아니라 검증·학습 목적이다.
+ *
+ * ## 왜 `@Profile("local")` 이 아니라 설정 스위치인가 (2026-08-02)
+ * 원래 local 전용이었는데, **alpha 에서야 드러나는 문제가 실재**하기 때문에 그쪽에서도 켤 수
+ * 있어야 했다 — 분리 배포의 CORS·착지·claim 전파는 로컬에서 재현되지 않는다(`docs/learning/42`).
+ *
+ * 프로파일 목록(`local, alpha`)에 이름을 박는 대신 [ConditionalOnProperty] 를 쓴 이유:
+ * 환경이 하나 늘 때마다 **코드를 고쳐 재배포**해야 하고, 반대로 사고가 났을 때 **코드 배포 없이는
+ * 끌 수 없다.** 진단용 엔드포인트는 끄는 비용이 싸야 한다.
+ *
+ * `matchIfMissing` 을 두지 않아 **설정이 없으면 빈이 아예 없다**(fail-closed). 켜는 것이 명시적
+ * 행위여야 한다는 판단이며, 근거는 `docs/learning/36`.
+ *
+ * ## ⚠️ 이 스위치는 인증을 열지 않는다
+ * 이 컨트롤러의 경로는 `/iam/debug` 하위라 `IamSecurityConfig` 의 `LOCAL_ONLY_PUBLIC_PATHS`
+ * (= `/debug` 하위)에 **걸리지 않는다.** 따라서 `anyRequest().authenticated()` 가 적용되어
+ * **켜져 있어도 인증이 필요하다.** 그리고 돌려주는 것은 호출자 **자기 토큰**의 클레임뿐이다.
+ *
+ * 같은 이유로 `ThreadProbeController` 는 `@Profile("local")` 로 **그대로 둔다** — 그쪽은
+ * `/debug/thread` 라 local 에서 공개 경로이고, 스위치로 바꾸면 실수로 켰을 때 무인증으로 열린다.
+ * 두 프로브의 취급이 다른 것은 일관성 부족이 아니라 **노출 범위가 다르기 때문**이다.
+ *
+ * > 위에서 경로를 "하위" 로 풀어 쓴 이유: KDoc 안에 슬래시 경로 뒤 와일드카드 두 개를 그대로
+ * > 적으면 Kotlin 이 **중첩 블록 주석 시작**으로 읽어 파일 끝까지 주석이 된다(`CLAUDE.md` §5).
+ * > 실제로 이 파일을 쓰다 한 번 걸렸다.
  *
  * ## 왜 필요한가 — 이 경로에는 조용히 깨질 지점이 많다
  * 브라우저에서 `GET /iam/debug/whoami` 하나가 성공하려면 아래가 **전부** 맞아야 한다.
@@ -32,7 +55,11 @@ import org.springframework.web.bind.annotation.RestController
  */
 @RestController
 @RequestMapping("/iam/debug")
-@Profile("local")
+@ConditionalOnProperty(
+  prefix = "unigate.iam.probe.caller",
+  name = ["enabled"],
+  havingValue = "true",
+)
 class CallerProbeController {
   @GetMapping("/whoami")
   fun whoAmI(

@@ -75,6 +75,18 @@ unigate:
     security:
       expected-audience: ${IAM_EXPECTED_AUDIENCE:unigate-iam}
 
+    # ── 진단 프로브 (2026-08-02) ─────────────────────────────────────────────
+    # `GET /iam/debug/whoami` — GW 가 relay 한 토큰의 클레임을 호출자 **본인에게만** 되비춘다.
+    #
+    # **기본값은 꺼짐이다.** 진단 엔드포인트는 켜는 것이 명시적 행위여야 하고, 설정을 빠뜨렸을 때
+    # 열려 있는 것보다 없는 편이 안전하다(docs/learning/36 의 fail-closed 판단).
+    #
+    # ⚠️ 켜도 인증은 그대로 필요하다 — 경로가 `/iam/debug/**` 라 `LOCAL_ONLY_PUBLIC_PATHS`
+    # (`/debug/**`)에 걸리지 않고 `anyRequest().authenticated()` 가 적용된다.
+    probe:
+      caller:
+        enabled: ${IAM_CALLER_PROBE_ENABLED:false}
+
     # ── outbox 워커 (Phase 8d · 9b) ─────────────────────────────────────────
     # 값 자체는 코드 기본값과 같지만 **명시해 둔다.** 설정 파일에 없는 값은 존재를 모르게 되고,
     # 장애 때 "폴링 주기를 어떻게 바꾸지" 를 코드에서 찾게 된다.

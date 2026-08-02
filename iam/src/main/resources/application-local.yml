@@ -26,6 +26,10 @@ spring:
 # client-secret 기본값은 부팅만 되게 하는 자리표시자다. 실제 값이 아니며 커밋 대상도 아니다.
 unigate:
   iam:
+    # 진단 프로브는 로컬에서 켜 둔다 — 예전 `@Profile("local")` 과 같은 결과다.
+    probe:
+      caller:
+        enabled: ${IAM_CALLER_PROBE_ENABLED:true}
     keycloak:
       server-url: ${KEYCLOAK_URL:http://localhost:8180}
       realm: ${KEYCLOAK_REALM:test}
