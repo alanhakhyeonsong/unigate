@@ -4,8 +4,12 @@
 > 게이트웨이를 8개로 늘려도 상한을 정한 것은 replica 1개짜리 IAM 이었고, 그 포화는 장애가
 > 아니라 **3~18ms 짜리 거절**로 나타났다. IAM 을 풀자 다음 상한은 앱 밖 —
 > **공유 DB 의 커넥션 슬롯**이었고, 이번엔 `CrashLoopBackOff` 라는 전혀 다른 얼굴로 왔다.
-> 관련: Phase 6+ · 브랜치 `test/loadtest-capacity-ceiling` ·
-> 코드 `loadtest/scenario-b-capacity.js` · `gateway/src/main/resources/application.yml` (resilience4j)
+> 관련: Phase 6+ · 커밋 `404f767`(#56 · 노드 여유 회복 후 재측정) ·
+> `518ca31`(#57 · IAM 스케일과 DB 커넥션) ·
+> 코드 `loadtest/scenario-b-capacity.js` · `loadtest/lib/session.js` ·
+> `gateway/src/main/resources/application.yml`(resilience4j) ·
+> `deploy/helm/unigate-gateway/values-alpha-loadtest.yaml` ·
+> `deploy/helm/unigate-iam/values-alpha-loadtest.yaml`
 
 ## 1. 왜 필요했나
 
