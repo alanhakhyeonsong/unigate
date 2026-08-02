@@ -31,6 +31,17 @@ const BASE_URL = (__ENV.BASE_URL || '').replace(/\/+$/, '')
 const TARGET_PATH = __ENV.TARGET_PATH || '/iam/profile'
 const MAX_VUS = Number(__ENV.MAX_VUS || 60)
 
+/**
+ * iteration 사이 think time(초).
+ *
+ * 기본 0.5 는 "사람이 화면을 보는 시간" 을 흉내낸 값이고, 지난 회차가 이 값으로 측정됐다.
+ * ⚠️ **포화점을 찾을 때는 낮춘다.** think time 이 고정이면 VU 당 요청률에 천장이 생겨
+ * (0.5s + 응답시간 ≈ VU 당 2 req/s 미만), 앱이 아니라 **부하 생성기 쪽 산술이 상한을 정한다.**
+ * VU 를 늘려 같은 요청률을 만들 수도 있지만 그만큼 로컬 자원을 더 쓰므로,
+ * 로컬에서 쏘는 동안에는 think time 을 줄이는 편이 병목을 앱 쪽에 남긴다.
+ */
+const SLEEP_SECONDS = Number(__ENV.SLEEP_SECONDS ?? 0.5)
+
 // "user:pass,user2:pass2" → [{username, password}]
 const USERS = (__ENV.USERS || '')
   .split(',')
@@ -92,7 +103,7 @@ export default function () {
     '5xx 가 아니다': (r) => r.status < 500,
   })
 
-  sleep(0.5)
+  if (SLEEP_SECONDS > 0) sleep(SLEEP_SECONDS)
 }
 
 /**
@@ -126,6 +137,14 @@ export function handleSummary(data) {
     `  429 발생     : ${m['http_req_failed{status:429}']?.values.passes ?? 0}`,
     `  지연         : avg=${num(d.avg, 'ms')} med=${num(d.med, 'ms')} p(95)=${num(d['p(95)'], 'ms')} max=${num(d.max, 'ms')}`,
     `  checks       : ${m.checks?.values.passes ?? 0} 통과 / ${m.checks?.values.fails ?? 0} 실패`,
+    '',
+    // ⚠️ 여기부터는 **앱이 아니라 부하 생성기 쪽**을 보는 줄이다.
+    //    waiting 은 서버가 쓴 시간, blocked/connecting 은 로컬이 연결을 잡느라 기다린 시간이다.
+    //    blocked·connecting 이 waiting 에 비해 커지면 그 회차의 상한은 앱이 아니라 여기서 났다.
+    `  부하 생성기  : blocked p(95)=${num(m.http_req_blocked?.values['p(95)'], 'ms')} · ` +
+      `connecting p(95)=${num(m.http_req_connecting?.values['p(95)'], 'ms')} · ` +
+      `waiting p(95)=${num(m.http_req_waiting?.values['p(95)'], 'ms')}`,
+    `  VU 최대      : ${num(m.vus_max?.values.max)} · think time ${SLEEP_SECONDS}s`,
     '────────────────────────────────────────────────────────',
     '',
   )

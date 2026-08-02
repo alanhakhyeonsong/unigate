@@ -35,19 +35,59 @@ env:
   # 낮춰서 앱 용량을 보되, traceId 상관관계가 필요한 검증은 이 프로파일로 하지 않는다.
   TRACING_SAMPLING_PROBABILITY: "0.05"
 
-# ⚠️ maxReplicas 는 **메모리에서 나온 수**다(2026-07-28 실측).
+# ── requests — **부하테스트에서만 실사용에 맞춘다** ───────────────────────────
 #
-# 파드를 받을 수 있는 노드가 worker-node-1 하나뿐이고(나머지 둘은 CPU 예약이 꽉 찼다),
-# 그 노드의 메모리 여유가 2.33Gi 라 512Mi × 4 가 상한이다.
-# 이보다 크게 잡으면 늘어난 파드가 Pending 으로 쌓이기만 하고, 그 상태는 "용량 한계" 처럼
-# 보이지만 실제로는 **스케줄 실패**다 — 둘을 구분하려면 상한을 실제 수용량에 맞춰야 한다.
+# ⚠️ `values-alpha.yaml` 의 `cpu: 50m` 을 여기서 되돌리는 이유가 이번 회차의 핵심이다.
 #
-# 노드 여유가 늘면 이 값을 올린다. 다만 파드가 전부 같은 노드에 몰리므로
-# 노드 분산 효과는 이 구성으로 측정할 수 없다.
+# HPA 의 utilization 은 **실사용 ÷ request** 다. 지난 회차(2026-07-28)는 스케줄을 통과시키려고
+# request 를 50m 까지 낮춘 상태로 측정했고, 그 결과 파드당 실사용 200m 이 곧 **400%/60%** 로
+# 보였다. 상한 4에 막혀 replica 가 멈췄는데 같은 구간 응답은 p95 46ms · 실패 0.127% 로 멀쩡했다.
+# 즉 **앱이 포화된 게 아니라 HPA 지표가 과민했던 것**이고, 그 회차는 용량을 재지 못했다.
+#
+# 200m 은 임의값이 아니라 그 회차의 실측(파드당 실사용 ≈ 200m = 400% × 50m)이다.
+# 이러면 부하 시 utilization 이 100% 근처가 되어 target 60% 가 "실제로 바쁜 상태"를 가리킨다.
+#
+# ⚠️ 운영값(`values-alpha.yaml`)은 그대로 둔다. request 를 올리면 포화된 공용 클러스터에서
+#    스케줄이 막힐 수 있고, 그건 부하 창에서만 감수할 위험이다.
+resources:
+  requests:
+    cpu: 200m
+    memory: 512Mi
+  limits:
+    cpu: 1000m
+    memory: 1536Mi
+
+# ── 노드 분산 ─────────────────────────────────────────────────────────────────
+#
+# 지난 회차는 파드 4개가 **전부 worker-node-1 하나에** 있었다. 다른 노드는 CPU 예약이
+# 꽉 차 스케줄 자체가 안 됐고, podAntiAffinity 를 걸면 아예 Pending 이 됐다.
+# 그래서 "스케일아웃이 동작하는가"는 봤지만 **노드 분산 효과는 측정할 수 없었다.**
+#
+# 2026-08-02 현재 노드가 한 대 늘고(worker-node-3) 예약도 풀려, 200m/512Mi 기준
+# 41개를 받을 수 있다. 이제 분산을 실제로 걸 수 있다.
+#
+# ⚠️ `ScheduleAnyway` 를 쓴다. `DoNotSchedule` 은 균등을 강제하지만 노드 여유가 어긋나는
+#    순간 Pending 이 쌓이고, 그 상태는 "용량 한계" 와 구분되지 않는다 — 지난 회차에
+#    podAntiAffinity(required)로 겪은 것과 같은 함정이다. 여기서 재려는 것은 스케줄러의
+#    강제력이 아니라 **분산됐을 때 트래픽이 실제로 고르게 가는가** 다.
+#
+# labelSelector 는 생략한다 — 라이브러리 차트가 이 앱의 selectorLabels 로 채운다.
+# (셀렉터 없는 제약은 에러가 아니라 무효라서, 빠뜨리면 분산이 켜진 것처럼 보이고 실제로는 안 걸린다.)
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+
+# ⚠️ maxReplicas 는 **노드 수용량에서 나온 수**다.
+#
+# 지난 회차의 4는 "worker-node-1 의 메모리 여유 2.33Gi ÷ 512Mi" 였다. 그 제약이 풀렸으므로
+# 8로 올린다(200m × 8 = 1.6 core · 512Mi × 8 = 4Gi — 여유 노드 3대에 충분).
+# 상한을 수용량보다 크게 잡으면 늘어난 파드가 Pending 으로 쌓이고, 그 상태는 "용량 한계" 처럼
+# 보이지만 실제로는 **스케줄 실패**다 — 둘을 구분하려면 상한을 실제 수용량 안에 둬야 한다.
 autoscaling:
   enabled: true
   minReplicas: 2
-  maxReplicas: 4
+  maxReplicas: 8
   targetCPUUtilizationPercentage: 60
   behavior:
     scaleUp:

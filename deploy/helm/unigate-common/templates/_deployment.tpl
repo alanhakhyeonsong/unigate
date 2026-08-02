@@ -190,6 +190,27 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- /*
+        ⚠️ labelSelector 를 빠뜨린 topologySpreadConstraint 는 **에러가 아니라 무효**다.
+        셀렉터가 없으면 세는 대상이 0개라 skew 가 항상 0 이고, 제약은 걸려 있는데
+        스케줄러는 아무 제한도 받지 않는다 — 파드가 한 노드에 다 몰려도 매니페스트만
+        보면 분산이 켜져 있는 것처럼 보인다.
+        그래서 값에 labelSelector 가 없으면 이 앱의 selectorLabels 로 채운다.
+        (Deployment 의 spec.selector 와 같은 라벨이라 "이 앱의 파드" 와 정확히 일치한다.)
+      */}}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- range $constraint := . }}
+        - {{ toYaml (omit $constraint "labelSelector") | indent 10 | trim }}
+          labelSelector:
+            {{- if $constraint.labelSelector }}
+            {{- toYaml $constraint.labelSelector | nindent 12 }}
+            {{- else }}
+            matchLabels:
+              {{- include "unigate-common.selectorLabels" $ | nindent 14 }}
+            {{- end }}
+        {{- end }}
+      {{- end }}
       {{- with .Values.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}

@@ -145,3 +145,7 @@ env:
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# 노드 간 파드 분산. 항목에 labelSelector 를 주지 않으면 라이브러리가 이 앱의
+# selectorLabels 로 채운다 — 셀렉터 없는 제약은 에러가 아니라 **무효**이기 때문이다.
+topologySpreadConstraints: []
