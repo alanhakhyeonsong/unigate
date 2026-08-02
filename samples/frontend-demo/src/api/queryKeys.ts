@@ -8,6 +8,11 @@
  */
 export const queryKeys = {
   whoami: ['whoami'] as const,
+  /**
+   * 개요 화면의 세션 프로브. `whoami` 와 **키를 나눈다** — 같은 엔드포인트지만 401 을 다루는
+   * 방식이 달라(이동 vs 표시) 캐시를 공유하면 한쪽의 실패가 다른 쪽의 동작을 바꾼다.
+   */
+  sessionProbe: ['session-probe'] as const,
   profile: ['profile'] as const,
   orders: (tenantId: string) => ['tenants', tenantId, 'orders'] as const,
   order: (tenantId: string, id: string) => ['tenants', tenantId, 'orders', id] as const,

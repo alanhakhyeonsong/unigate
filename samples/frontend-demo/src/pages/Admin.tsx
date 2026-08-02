@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { ProblemAlert } from '../components/ProblemAlert'
+import { ProofBanner } from '../components/ProofBanner'
 import { useAdminMembers, useAdminMutations } from '../queries/hooks'
 
 /**
@@ -24,6 +25,29 @@ export function Admin() {
   return (
     <section>
       <h2>관리자</h2>
+
+      <ProofBanner
+        claim={
+          <>
+            접근을 막는 주체는 <strong>서버</strong>다. FE 가 메뉴를 숨겨서가 아니다.
+          </>
+        }
+        how={[
+          '관리자가 아닌 계정으로 이 화면을 연다 (메뉴는 그대로 보인다)',
+          '테넌트 생성을 눌러 본다',
+          '관리자 계정으로 다시 들어와 테넌트를 만든다',
+          '만든 테넌트에 subject 로 멤버를 초대한다',
+        ]}
+        expect={
+          <>
+            비관리자에게는 <strong>403</strong> 이 응답으로 와야 한다(버튼이 사라지는 게 아니라).
+            생성 직후 테넌트 상태는 <code>PENDING</code> 이고, group 프로비저닝이 끝나야{' '}
+            <code>ACTIVE</code> 가 된다.
+          </>
+        }
+        refs={['iam/.../iamIn/TenantAdminController.kt', 'iam/.../config/IamSecurityConfig.kt']}
+      />
+
       <p className="note">
         <code>unigate-admin</code> realm 역할이 없으면 아래 모든 호출이 <strong>403</strong> 이다.
         메뉴를 숨기지 않는 이유는 그 사실을 눈으로 보기 위해서다.

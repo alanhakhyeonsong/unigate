@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { PendingBadge } from '../components/PendingBadge'
 import { ProblemAlert } from '../components/ProblemAlert'
+import { ProofBanner } from '../components/ProofBanner'
 import { useChangeEmail, useProfile, useUpdateProfile } from '../queries/hooks'
 
 export function Profile() {
@@ -12,14 +13,35 @@ export function Profile() {
   // 성공과 보상을 응답으로 구분할 수 없어 요청 값을 기억해 둔다(hooks.ts KDoc 참조).
   const [requested, setRequested] = useState<string | null>(null)
 
-  if (isLoading) return <p>불러오는 중…</p>
-
   const settled = requested && !data?.pendingEmail
   const succeeded = settled && data?.email === requested
 
   return (
     <section>
       <h2>프로필</h2>
+
+      <ProofBanner
+        claim={
+          <>
+            IAM 이 소유한 값은 <strong>즉시</strong> 바뀌고, Keycloak 이 소유한 값은{' '}
+            <strong>워커를 거쳐 나중에</strong> 바뀐다.
+          </>
+        }
+        how={[
+          '표시 이름을 바꾼다 — 화면이 곧바로 갱신된다',
+          '이메일 변경을 요청한다 — 202 로 끝나고 "반영 대기" 배지가 붙는다',
+          '배지가 사라질 때까지 둔다(폴링한다)',
+        ]}
+        expect={
+          <>
+            이메일은 <strong>확정 값과 대기 값이 따로</strong> 보여야 한다. 요청 즉시 확정 값이
+            바뀌면 실패했을 때 되돌릴 근거가 사라진다 — 그래서 일부러 나눠 둔다.
+          </>
+        }
+        refs={['iam/.../user/service/ChangeMyEmailService.kt', 'IAM_PLATFORM_DECISION.md §6.3 UC-3']}
+      />
+
+      {isLoading && <p>불러오는 중…</p>}
       <ProblemAlert error={error} />
       {data && (
         <>

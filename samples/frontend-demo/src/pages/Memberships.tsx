@@ -1,4 +1,5 @@
 import { ProblemAlert } from '../components/ProblemAlert'
+import { ProofBanner } from '../components/ProofBanner'
 import { useAcceptInvite, useMyMemberships, useWhoami } from '../queries/hooks'
 
 /**
@@ -17,6 +18,30 @@ export function Memberships() {
   return (
     <section>
       <h2>내 멤버십</h2>
+
+      <ProofBanner
+        claim={
+          <>
+            인가의 근거는 도메인 목록이 아니라 <strong>토큰 claim</strong> 이다. 둘은 어긋날 수
+            있고, 어긋나는 것이 정상이다.
+          </>
+        }
+        how={[
+          '아래 두 줄(토큰 claim / 도메인 목록)을 비교한다',
+          'INVITED 상태의 초대를 수락한다',
+          '수락 직후 "claim 에 있는가" 열을 다시 본다',
+          '그 테넌트로 주문을 조회해 본다',
+        ]}
+        expect={
+          <>
+            수락했는데도 claim 에는 <strong>없음</strong> 이어야 하고, 그 테넌트 API 는{' '}
+            <strong>403</strong> 이어야 한다. group 투영이 outbox 를 거치고 이미 발급된 토큰은
+            만료 전까지 옛 소속을 담기 때문이다 — <strong>재로그인해야 풀린다.</strong>
+          </>
+        }
+        refs={['iam/.../tenant/service/MembershipService.kt', 'docs/learning/33']}
+      />
+
       <ProblemAlert error={error} />
 
       <div className="note">
