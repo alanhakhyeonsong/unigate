@@ -58,6 +58,12 @@ bin/
 !.codex/skills/
 !.codex/skills/**
 
+# codex 연동 산출물 — `CLAUDE.md` 와 `.claude/skills/` 를 경로만 바꿔 복사한 것이다.
+# 커밋하면 같은 지침이 두 벌이 되고, 이후 한쪽만 고치면 조용히 갈라진다.
+# (`.codex/*` 규칙은 Phase 0 부터 있었지만 도구가 쓰는 경로가 늘어 여기까지 덮지 못했다.)
+AGENTS.md
+.agents/
+
 .claude/settings.local.json
 .claude/skills/**/.env
 

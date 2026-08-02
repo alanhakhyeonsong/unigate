@@ -58,19 +58,38 @@ export function login(baseUrl, username, password) {
     { tags: { name: 'auth:login' } },
   )
 
+  // ⚠️ **착지 URL 로 성공을 판정하지 않는다** (2026-08-02 에 이걸로 한 번 막혔다).
+  //
+  // 원래 판정은 `r.url.startsWith(baseUrl)` — "로그인 후 게이트웨이로 돌아왔다" 였다.
+  // 그런데 FE 를 분리 배포하며 `UNIGATE_FRONTEND_BASE_URI` 가 들어오자(PR #47)
+  // 로그인 성공 착지가 게이트웨이 루트가 아니라 **콘솔 호스트**가 됐다.
+  // 로그인은 멀쩡히 성공하는데 부하테스트만 "로그인 실패" 로 죽었고,
+  // 메시지가 redirect_uri·realm 을 가리켜 **엉뚱한 곳을 뒤지게** 만들었다.
+  //
+  // 착지는 배포 구성에 따라 바뀌는 값이다. 판정 근거는 그 구성과 무관한 것이어야 한다 —
+  // BFF 로그인의 결과물은 **세션 쿠키**이므로 그걸 본다.
   const ok = check(res, {
-    '로그인 후 게이트웨이로 돌아왔다': (r) => r.url.startsWith(baseUrl),
     '로그인 폼이 다시 나오지 않았다': (r) => !/kc-form-login/.test(r.body || ''),
+    '게이트웨이 세션 쿠키가 생겼다': () => hasSessionCookie(baseUrl),
   })
 
   if (!ok) {
-    // 자격증명 오류와 realm 설정 오류를 구분해야 원인을 좁힐 수 있다.
+    // 원인을 좁힐 수 있게 갈래를 나눈다. 착지 URL 을 메시지에 넣어 두면
+    // 착지가 또 바뀌었을 때 로그만 보고 바로 알 수 있다.
     const reason = /Invalid username or password/i.test(res.body || '')
       ? '자격증명 불일치'
-      : '리다이렉트 설정(redirect_uri) 또는 realm 구성 확인 필요'
+      : /kc-form-login/.test(res.body || '')
+        ? '로그인 폼이 다시 나왔다 — 계정 상태(required action · temporary 비밀번호) 확인'
+        : `세션 쿠키가 생기지 않았다 (착지: ${res.url})`
     fail(`로그인 실패 (${reason}) status=${res.status}`)
   }
   return true
+}
+
+/** 세션 쿠키 유무만 본다. `extractSessionCookie` 와 달리 없어도 fail 하지 않는다. */
+function hasSessionCookie(baseUrl) {
+  const cookies = http.cookieJar().cookiesForURL(baseUrl)
+  return Boolean(cookies[SESSION_COOKIE] && cookies[SESSION_COOKIE][0])
 }
 
 /**
