@@ -31,11 +31,13 @@ import org.springframework.security.web.server.authorization.ServerAccessDeniedH
 import org.springframework.security.web.server.csrf.CookieServerCsrfTokenRepository
 import org.springframework.security.web.server.csrf.CsrfWebFilter
 import org.springframework.security.web.server.csrf.ServerCsrfTokenRequestAttributeHandler
+import org.springframework.security.web.server.savedrequest.NoOpServerRequestCache
 import org.springframework.security.web.server.util.matcher.AndServerWebExchangeMatcher
 import org.springframework.security.web.server.util.matcher.NegatedServerWebExchangeMatcher
 import org.springframework.security.web.server.util.matcher.ServerWebExchangeMatcher
 import org.springframework.security.web.server.util.matcher.ServerWebExchangeMatchers
 import org.springframework.web.cors.reactive.CorsConfigurationSource
+import java.net.URI
 
 /**
  * 게이트웨이 인증 정책 — Authorization Code Flow (BFF).
@@ -88,7 +90,43 @@ class SecurityConfig(
       .exceptionHandling { exceptions ->
         exceptions.authenticationEntryPoint(authenticationEntryPoint)
         exceptions.accessDeniedHandler(accessDeniedHandler)
-      }.authorizeExchange { exchanges ->
+      }
+      // ── 저장된 요청을 쓰지 않는다 (2026-08-02, alpha 실측 후 추가) ──────────
+      //
+      // ## 무엇이 터졌나
+      // 로그인에 성공했는데 FE 가 아니라 게이트웨이의 `/login?logout` 으로 착지해 **404** 가 났다.
+      // `unigate.frontend.base-uri` 는 정상 주입돼 있었는데도 그랬다.
+      //
+      // ## 왜 그런가 — 저장된 요청이 설정한 착지를 **이긴다**
+      // `RedirectServerAuthenticationSuccessHandler` 는 이렇게 동작한다:
+      //
+      //     requestCache.getRedirectUri(exchange).defaultIfEmpty(location).flatMap(::sendRedirect)
+      //
+      // 즉 `setLocation()` 으로 넣은 값은 **저장된 요청이 없을 때만** 쓰인다. 그리고 기본
+      // requestCache 는 `WebSessionServerRequestCache` 라 세션에 실제로 저장된다.
+      //
+      // 저장하는 주체는 [me.ramos.unigate.adapter.gatewayIn.ProblemDetailAuthenticationEntryPoint]
+      // 다. 이 진입점은 **분기형**이고, 브라우저 top-level 이동 분기에서
+      // `RedirectServerAuthenticationEntryPoint` 에 위임하는데 그 구현이 `saveRequest()` 를 부른다.
+      // 401 분기만 보고 "우리는 저장하지 않는다" 고 단정했던 것이 오독이었다.
+      //
+      // ## 왜 NoOp 이 맞는 선택인가 (덮어쓰기·경로 예외가 아니라)
+      // "원래 보려던 페이지로 복귀" 는 **게이트웨이가 화면을 서빙할 때** 의미가 있다. 이 게이트웨이는
+      // API 프록시 + BFF 이고 자기 HTML 페이지가 없다. 따라서 저장될 수 있는 것은 ① API 경로
+      // (복귀하면 JSON 이 뜬다) 아니면 ② 존재하지도 않는 `/login` 뿐이다 — **둘 다 착지로 부적절**하다.
+      // 복귀 가치가 0 이므로 기능을 끄는 것이 특수 케이스를 쌓는 것보다 낫다.
+      //
+      // ## ⚠️ 이 줄 **하나만으로는 고쳐지지 않는다**
+      // 실제로 저장·조회를 하는 두 핸들러는 우리가 직접 `new` 로 만든 객체라, 각자 자기 소유의
+      // `WebSessionServerRequestCache` 를 들고 있고 이 빌더 설정이 그 인스턴스에 주입되지 않는다.
+      // 이 줄만 넣고 테스트를 돌렸을 때 **여전히 저장이 일어났다.** 그래서 실제 차단은 두 곳에서 한다:
+      //   - `ProblemDetailAuthenticationEntryPoint`  → 저장을 막는다
+      //   - `AuditingAuthenticationSuccessHandler`   → 읽기를 막는다
+      // 여기 설정은 **Spring 이 스스로 만드는** 컴포넌트에 대한 몫이다(우리가 못 보는 경로 대비).
+      //
+      // 회귀 가드: `GatewaySecurityIntegrationTest`(미인증 302 가 세션을 만들지 않는다).
+      .requestCache { cache -> cache.requestCache(NoOpServerRequestCache.getInstance()) }
+      .authorizeExchange { exchanges ->
         exchanges.pathMatchers(*PUBLIC_PATHS).permitAll()
 
         // local 프로브(`/debug/**`)는 @Profile("local") 이라 다른 프로파일에는 라우트 자체가 없다.
@@ -270,6 +308,17 @@ class SecurityConfig(
   ): ServerLogoutSuccessHandler =
     OidcClientInitiatedServerLogoutSuccessHandler(clientRegistrationRepository).apply {
       setPostLogoutRedirectUri(postLogoutRedirectUri(frontendBaseUri))
+      // ── fallback 착지 (2026-08-02, alpha 실측 후 추가) ──────────────────────
+      //
+      // `setPostLogoutRedirectUri` 는 **OIDC 사용자로 로그인돼 있을 때만** 쓰인다. 인증되지 않은
+      // 상태에서 `POST /logout` 이 오면(세션 만료 뒤 로그아웃 버튼, 시크릿 창 첫 방문 등)
+      // 위임체 `RedirectServerLogoutSuccessHandler` 의 기본값 **`/login?logout`** 으로 간다.
+      //
+      // 그 경로는 이 게이트웨이에 **존재하지 않는다** — BFF 라 로그인 페이지를 서빙하지 않는다.
+      // 게다가 공개 경로도 아니라 인증 진입점에 걸려 302 → Keycloak 으로 튄다. 실측에서는
+      // 이것이 저장된 요청으로 남아 로그인 성공 후 착지를 덮고 **404** 로 끝났다
+      // (위 `requestCache` 주석 참조). 두 결함이 연쇄해야 드러나는 형태였다.
+      setLogoutSuccessUrl(logoutFallbackUri(frontendBaseUri))
     }
 
   /**
@@ -302,6 +351,9 @@ class SecurityConfig(
     /** FE 를 분리하지 않은 배포의 로그아웃 착지. `{baseUrl}` 은 게이트웨이 자신으로 치환된다. */
     private const val SAME_ORIGIN_POST_LOGOUT_URI = "{baseUrl}/"
 
+    /** same-origin 배포의 루트. `{baseUrl}` 을 치환해 줄 주체가 없는 자리에서 쓴다. */
+    private const val SAME_ORIGIN_ROOT = "/"
+
     /**
      * 로그아웃 착지 URI. FE 베이스가 설정돼 있으면 그쪽, 아니면 게이트웨이 자신.
      *
@@ -310,6 +362,19 @@ class SecurityConfig(
      */
     internal fun postLogoutRedirectUri(frontendBaseUri: String): String =
       frontendBaseUri.trim().ifEmpty { SAME_ORIGIN_POST_LOGOUT_URI }
+
+    /**
+     * 미인증 로그아웃의 착지. Keycloak 을 거치지 않으므로 **`{baseUrl}` 치환이 없다.**
+     *
+     * [postLogoutRedirectUri] 와 값이 갈리는 유일한 이유가 이것이다 — 그쪽은 Keycloak 에
+     * `post_logout_redirect_uri` 로 넘기는 문자열이라 `{baseUrl}` 플레이스홀더가 살아 있지만,
+     * 이쪽은 [URI] 로 바로 리다이렉트하므로 치환해 줄 주체가 없다. 같은 문자열을 넣으면
+     * 브라우저가 `/%7BbaseUrl%7D/` 로 가서 404 가 난다.
+     *
+     * same-origin 배포에서 `/` 는 곧 FE 다(로컬은 Vite dev proxy). 분리 배포에서는 FE 절대 주소다.
+     */
+    internal fun logoutFallbackUri(frontendBaseUri: String): URI =
+      URI.create(frontendBaseUri.trim().ifEmpty { SAME_ORIGIN_ROOT })
 
     /** `application-*.yml` 의 `spring.security.oauth2.client.registration.<이 이름>` 과 일치해야 한다. */
     private const val KEYCLOAK_REGISTRATION_ID = "keycloak"
