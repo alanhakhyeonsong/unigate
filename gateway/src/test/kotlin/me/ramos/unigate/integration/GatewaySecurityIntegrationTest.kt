@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.test.web.server.LocalServerPort
+import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
 import org.springframework.test.context.ActiveProfiles
@@ -192,6 +193,77 @@ class GatewaySecurityIntegrationTest {
       // (로그아웃 자체는 미인증이라 리다이렉트로 끝난다.)
       .expectStatus()
       .value { status -> assertThat(status).isNotEqualTo(HttpStatus.FORBIDDEN.value()) }
+  }
+
+  @Test
+  fun `미인증 로그아웃은 존재하지 않는 login 이 아니라 착지 URI 로 보낸다`() {
+    // ## 이 테스트가 고정하는 실측 결함 (2026-08-02, alpha)
+    //
+    // `OidcClientInitiatedServerLogoutSuccessHandler` 의 `setPostLogoutRedirectUri` 는
+    // **OIDC 사용자로 인증돼 있을 때만** 쓰인다. 미인증 로그아웃(세션 만료 뒤 버튼, 시크릿 창)은
+    // 위임체 `RedirectServerLogoutSuccessHandler` 의 기본값 `/login?logout` 으로 갔다.
+    //
+    // 그 경로는 이 게이트웨이에 **없다**(BFF 라 로그인 페이지를 서빙하지 않는다). 게다가 공개
+    // 경로도 아니라 인증 진입점에 걸려 302 → Keycloak 으로 튀고, 그것이 저장된 요청으로 남아
+    // **로그인 성공 후 착지를 덮어 404** 로 끝났다. 결함 둘이 연쇄해야 드러나는 형태였다.
+    //
+    // test 프로파일에는 `unigate.frontend.base-uri` 가 없으므로 착지는 same-origin 루트다.
+    val token =
+      client
+        .get()
+        .uri("/actuator/health")
+        .exchange()
+        .expectStatus()
+        .isOk
+        .returnResult(String::class.java)
+        .responseCookies
+        .getFirst("XSRF-TOKEN")
+        ?.value
+
+    client
+      .post()
+      .uri("/logout")
+      .cookie("XSRF-TOKEN", token!!)
+      .header("X-XSRF-TOKEN", token)
+      .exchange()
+      .expectStatus()
+      .is3xxRedirection
+      .expectHeader()
+      .value(HttpHeaders.LOCATION) { location ->
+        // 핵심은 "무엇이 아닌가" 다 — `/login` 은 이 앱에 존재하지 않는 경로다.
+        assertThat(location).doesNotStartWith("/login")
+        assertThat(location).isEqualTo("/")
+      }
+  }
+
+  @Test
+  fun `미인증 브라우저 이동은 세션을 만들지 않는다 — 저장된 요청이 착지를 덮지 못하게`() {
+    // ## 왜 세션 생성 여부로 검증하나
+    //
+    // "저장된 요청이 없다"를 HTTP 로 직접 관찰할 방법은 없다. 그러나 기본 구현
+    // `WebSessionServerRequestCache.saveRequest` 는 **세션에 쓰기 때문에 세션을 시작시키고**,
+    // 그러면 응답에 `SESSION` 쿠키가 실린다. 그 쿠키의 **부재**가 저장이 일어나지 않았다는 관찰
+    // 가능한 증거다.
+    //
+    // 저장이 일어나면 `RedirectServerAuthenticationSuccessHandler` 가
+    // `requestCache.getRedirectUri(...).defaultIfEmpty(location)` 로 **저장분을 우선**하므로
+    // `AuditingAuthenticationSuccessHandler` 의 `setLocation` 이 조용히 무력해진다.
+    // 그 실패는 FE 를 분리한 배포에서만 드러나고 로컬에서는 절대 재현되지 않는다.
+    val cookies =
+      client
+        .get()
+        .uri("/api/echo")
+        .accept(MediaType.TEXT_HTML)
+        .header("Sec-Fetch-Mode", "navigate")
+        .exchange()
+        .expectStatus()
+        .is3xxRedirection
+        .returnResult(String::class.java)
+        .responseCookies
+
+    assertThat(cookies.getFirst("SESSION"))
+      .describedAs("미인증 302 응답이 세션을 만들었다 = 요청이 저장됐다는 뜻 (requestCache 가 NoOp 이 아니다)")
+      .isNull()
   }
 
   @Test

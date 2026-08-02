@@ -35,6 +35,14 @@ class PostAuthLandingTest :
           SecurityConfig.postLogoutRedirectUri("") shouldBe "{baseUrl}/"
         }
       }
+
+      `when`("미인증 상태로 로그아웃하면") {
+        then("`{baseUrl}` 이 아니라 실제 경로 `/` 로 간다") {
+          // 이 경로는 Keycloak 을 거치지 않아 **`{baseUrl}` 을 치환해 줄 주체가 없다.**
+          // 위 값을 그대로 쓰면 브라우저가 `/%7BbaseUrl%7D/` 로 가서 404 다.
+          SecurityConfig.logoutFallbackUri("") shouldBe URI.create("/")
+        }
+      }
     }
 
     given("FE 를 다른 호스트에 둔 배포") {
@@ -51,6 +59,14 @@ class PostAuthLandingTest :
         then("같은 FE URI 가 된다 — 로그인과 로그아웃이 갈리면 절반만 어긋난다") {
           // 한쪽만 FE 를 가리키면 "로그인하면 FE, 로그아웃하면 게이트웨이 404" 가 된다.
           SecurityConfig.postLogoutRedirectUri(feBase) shouldBe feBase
+        }
+      }
+
+      `when`("미인증 상태로 로그아웃하면") {
+        then("역시 FE 로 간다 — 인증 여부로 착지가 갈리면 안 된다") {
+          // 여기가 갈리면 "세션 만료 뒤 로그아웃 버튼" 만 게이트웨이로 튄다. 사용자에게는
+          // 재현 조건이 보이지 않아 "가끔 로그아웃하면 404" 로만 관찰된다.
+          SecurityConfig.logoutFallbackUri(feBase) shouldBe URI.create(feBase)
         }
       }
     }

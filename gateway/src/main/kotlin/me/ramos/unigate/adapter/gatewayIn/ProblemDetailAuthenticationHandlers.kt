@@ -10,6 +10,7 @@ import org.springframework.security.core.AuthenticationException
 import org.springframework.security.web.server.ServerAuthenticationEntryPoint
 import org.springframework.security.web.server.authentication.RedirectServerAuthenticationEntryPoint
 import org.springframework.security.web.server.authorization.ServerAccessDeniedHandler
+import org.springframework.security.web.server.savedrequest.NoOpServerRequestCache
 import org.springframework.stereotype.Component
 import org.springframework.web.server.ServerWebExchange
 import reactor.core.publisher.Mono
@@ -69,7 +70,26 @@ class ProblemDetailAuthenticationEntryPoint(
   private val objectMapper: ObjectMapper,
   private val traceIdResolver: TraceIdResolver,
 ) : ServerAuthenticationEntryPoint {
-  private val redirectEntryPoint = RedirectServerAuthenticationEntryPoint(LOGIN_URL)
+  /**
+   * 브라우저 내비게이션용 302 위임체.
+   *
+   * ## ⚠️ `setRequestCache(NoOp)` 이 없으면 로그인 착지가 조용히 어긋난다 (2026-08-02 실측)
+   * 이 클래스는 기본 생성 시 **자기 소유의** `WebSessionServerRequestCache` 를 들고, `commence()`
+   * 에서 `saveRequest()` 를 부른다. 그렇게 저장된 요청은
+   * [me.ramos.unigate.adapter.gatewayIn.AuditingAuthenticationSuccessHandler] 의 착지 설정을
+   * **이긴다**(`getRedirectUri().defaultIfEmpty(location)`).
+   *
+   * alpha 에서 미인증 로그아웃이 남긴 `/login?logout` 이 여기 저장돼, 로그인 성공 후 그 404 로
+   * 착지했다. 이 게이트웨이는 자기 HTML 페이지가 없어 "원래 요청으로 복귀" 의 가치가 0 이므로
+   * 저장 자체를 끈다.
+   *
+   * ⚠️ `SecurityConfig` 의 `http.requestCache { ... }` 로는 **이 인스턴스에 닿지 않는다.**
+   * 우리가 직접 만든 객체라 빌더가 주입해 줄 자리가 없기 때문이다. 그래서 여기서 따로 끈다.
+   */
+  private val redirectEntryPoint =
+    RedirectServerAuthenticationEntryPoint(LOGIN_URL).apply {
+      setRequestCache(NoOpServerRequestCache.getInstance())
+    }
 
   override fun commence(
     exchange: ServerWebExchange,

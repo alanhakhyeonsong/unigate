@@ -19,6 +19,7 @@ import org.springframework.security.web.server.authentication.RedirectServerAuth
 import org.springframework.security.web.server.authentication.ServerAuthenticationFailureHandler
 import org.springframework.security.web.server.authentication.ServerAuthenticationSuccessHandler
 import org.springframework.security.web.server.authentication.logout.ServerLogoutHandler
+import org.springframework.security.web.server.savedrequest.NoOpServerRequestCache
 import org.springframework.stereotype.Component
 import reactor.core.publisher.Mono
 import java.net.URI
@@ -66,10 +67,32 @@ internal fun postLoginLocation(frontendBaseUri: String): URI? =
  * 로그인 성공 → LOGIN_SUCCESS 감사 + `unigate.auth.login{result=success}` 증가 후 리다이렉트.
  *
  * ## 어디로 리다이렉트하는가 — FE 가 다른 호스트면 기본값이 틀린다
- * [RedirectServerAuthenticationSuccessHandler] 를 **인자 없이** 만들면 착지가 `/` 다(저장된 요청이
- * 있으면 그쪽이 우선). 그런데 이 게이트웨이의 미인증 진입점은 302 가 아니라 **401 + `loginUrl`** 을
- * 주는 방식이라([ProblemDetailAuthenticationHandlers]) 원래 요청을 저장하지 않는다. 저장된다 해도
- * 그건 FE 페이지가 아니라 API 경로다. 결국 **항상 `/`** 로 떨어진다.
+ * [RedirectServerAuthenticationSuccessHandler] 를 **인자 없이** 만들면 착지가 `/` 다. FE 를 다른
+ * 호스트에 두는 배포에서 `/` 는 게이트웨이 루트이고 거기엔 FE 가 없다.
+ *
+ * ## ⚠️ `setLocation` 은 저장된 요청을 이기지 못한다 (2026-08-02 정정)
+ * 이 KDoc 은 원래 *"진입점이 401 + `loginUrl` 을 주는 방식이라 원래 요청을 저장하지 않는다"* 고
+ * 적혀 있었다. **틀린 문장이었다.** [ProblemDetailAuthenticationEntryPoint] 는 **분기형**이고,
+ * 브라우저 top-level 이동 분기에서 `RedirectServerAuthenticationEntryPoint` 에 위임하는데 그
+ * 구현이 `saveRequest()` 를 부른다. 401 분기만 보고 단정한 오독이었다.
+ *
+ * 그리고 이 핸들러의 위임체는
+ * `requestCache.getRedirectUri(exchange).defaultIfEmpty(location)` 이라 **저장된 요청이 우선**이다.
+ * 즉 아래 `setLocation` 은 저장분이 없을 때만 쓰인다.
+ *
+ * alpha 실측에서 실제로 터졌다 — 미인증 로그아웃이 남긴 `/login?logout` 이 저장돼 로그인 성공 후
+ * 그리로 착지하고 404 가 났다.
+ *
+ * ## 그래서 세 곳에서 끈다 (한 곳만으로는 안 됐다)
+ * | 위치 | 무엇을 막나 | 왜 필요한가 |
+ * |---|---|---|
+ * | [ProblemDetailAuthenticationEntryPoint] | **저장**을 막는다 | 실제로 저장하는 지점 |
+ * | 아래 `setRequestCache` | **읽기**를 막는다 | 다른 진입점이 저장하게 돼도 착지가 안 흔들린다 |
+ * | `SecurityConfig.requestCache` | Spring 이 만드는 컴포넌트 | 위 둘에는 **닿지 않는다**(아래 참조) |
+ *
+ * ⚠️ `http.requestCache { ... }` **하나만으로는 고쳐지지 않는다.** 두 핸들러 모두 우리가 `new` 로
+ * 만든 객체라 각자 자기 소유의 `WebSessionServerRequestCache` 를 들고 있고, 빌더 설정이 그 인스턴스에
+ * 주입되지 않는다. 실제로 그것만 넣고 테스트를 돌렸을 때 여전히 저장이 일어났다.
  *
  * same-origin 배포(로컬 Vite dev proxy)에서는 `/` 가 곧 FE 라 아무 문제가 없다.
  * **FE 를 다른 호스트에 두는 순간** `/` 는 게이트웨이 루트가 되고, 거기엔 FE 가 없어 401 이 뜬다.
@@ -91,6 +114,10 @@ class AuditingAuthenticationSuccessHandler(
   private val log = LoggerFactory.getLogger(javaClass)
   private val delegate =
     RedirectServerAuthenticationSuccessHandler().apply {
+      // 읽는 쪽도 끈다. 저장하는 쪽([ProblemDetailAuthenticationEntryPoint])을 이미 껐지만,
+      // 저장 경로가 하나라는 보장은 없다 — Spring 이 다른 진입점을 쓰게 되는 순간 되살아난다.
+      // **착지를 정하는 곳이 여기 하나뿐이어야 한다**는 것이 이 설정의 요점이다.
+      setRequestCache(NoOpServerRequestCache.getInstance())
       postLoginLocation(frontendBaseUri)?.let { setLocation(it) }
     }
 
