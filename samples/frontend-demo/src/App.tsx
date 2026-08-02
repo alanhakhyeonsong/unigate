@@ -3,6 +3,8 @@ import { NavLink, Route, Routes, useParams } from 'react-router-dom'
 import { ensureCsrfToken, type CsrfToken } from './api/csrf'
 import { toAbsolute } from './api/env'
 import { ProofBanner } from './components/ProofBanner'
+import { useSessionProbe } from './queries/hooks'
+import { logoutJustRequested, markLogoutRequested } from './session/logoutNotice'
 import { RequestInspector } from './components/RequestInspector'
 import { Admin } from './pages/Admin'
 import { Diagnostics } from './pages/Diagnostics'
@@ -52,12 +54,89 @@ function LogoutForm() {
   }, [])
 
   return (
-    <form method="post" action={toAbsolute('/logout')}>
+    // 제출 **직전**에 표시를 남긴다. 이 폼은 top-level 이동이라 여기서부터 앱이 사라진다 —
+    // 돌아왔을 때 "방금 로그아웃했다" 를 알 방법이 이것뿐이다(`session/logoutNotice.ts`).
+    <form method="post" action={toAbsolute('/logout')} onSubmit={() => markLogoutRequested()}>
       {csrf && <input type="hidden" name={csrf.parameterName} value={csrf.token} />}
       <button type="submit" disabled={!csrf} title={csrf ? undefined : 'CSRF 토큰을 받는 중'}>
         로그아웃
       </button>
     </form>
+  )
+}
+
+/**
+ * 헤더의 인증 동작 — **세션 상태에 따라 로그인/로그아웃 중 하나만 보여준다.**
+ *
+ * ## 왜 바꿨나 (2026-08-02, alpha 관찰)
+ * 예전에는 로그아웃 버튼이 **항상** 있었다. 그래서 로그아웃한 뒤에도 화면이 그대로였고, 본문은
+ * "로그인하지 않은 상태다" 라고 말하는데 **헤더만 그걸 몰라** 우상단 「로그아웃」과 본문 「로그인」이
+ * 동시에 보였다. 로그아웃이 됐는지 안 됐는지 화면으로 판단할 수 없었다.
+ *
+ * ## "역할로 숨기지 않는다" 원칙과 충돌하지 않는가
+ * 충돌하지 않는다. 그 원칙은 **인가**에 대한 것이다 — 관리 메뉴를 역할로 감추면 "서버가 막았는가"
+ * 를 확인할 수 없게 되므로 감추지 않는다(`pages/Admin.tsx`). 반면 여기서 갈리는 것은 **관측된
+ * 세션 상태**이고, 서버 판정을 감추는 게 아니라 **드러난 사실을 반영**하는 것이다.
+ *
+ * 다만 대가는 있다 — "미인증으로 로그아웃을 눌러 본다" 는 경로가 화면에서 사라진다. 그 검증은
+ * 진단 화면이나 직접 호출로 대신한다.
+ *
+ * ## 상태를 판단할 수 없을 때는 고르지 않는다
+ * 5xx·전송 실패면 인증 여부를 모른다. 그때 둘 중 하나를 임의로 고르면 화면이 **거짓을 말한다.**
+ * 모른다고 적고, 복구 수단인 로그아웃만 남긴다.
+ */
+function SessionActions() {
+  const { state, loginUrl } = useSessionProbe()
+
+  if (state === 'loading') return <span className="muted">세션 확인 중…</span>
+
+  if (state === 'anonymous') {
+    return (
+      <button
+        // ⚠️ 반드시 **주소창 이동**이어야 한다. fetch 로 보내면 302 를 따라간 Keycloak 응답이
+        // CORS 에 막혀 콘솔에는 "CORS 에러" 만 뜨고 진짜 원인(미인증)이 가려진다(CLAUDE.md §6.1).
+        onClick={() => loginUrl && (window.location.href = toAbsolute(loginUrl))}
+        // 경로를 하드코딩하지 않는다 — 서버가 401 본문으로 알려준 값만 쓴다.
+        disabled={!loginUrl}
+        title={loginUrl ? undefined : '서버가 loginUrl 을 주지 않았다'}
+      >
+        로그인
+      </button>
+    )
+  }
+
+  if (state === 'unknown') {
+    return (
+      <>
+        <span className="muted">세션 상태 불명</span>
+        <LogoutForm />
+      </>
+    )
+  }
+
+  // 'authenticated' · 'authenticated-no-probe' — 둘 다 인증된 상태다(404 는 프로브 부재).
+  return <LogoutForm />
+}
+
+/**
+ * 로그아웃 직후 안내.
+ *
+ * **두 조건이 함께 참일 때만** 띄운다 — ① 이 탭에서 로그아웃을 요청했고 ② 지금 실제로 미인증이다.
+ * ①만 보고 띄우면 로그아웃이 중간에 실패했을 때도 "로그아웃됐다" 고 말하게 된다.
+ */
+function LogoutNotice() {
+  const { state } = useSessionProbe()
+  if (!logoutJustRequested || state !== 'anonymous') return null
+  return (
+    <div className="note" role="status">
+      <strong>로그아웃됐다.</strong> 게이트웨이 세션과 Keycloak SSO 세션이 함께 종료됐다 —
+      다음 로그인은 비밀번호를 다시 묻는다.
+      <br />
+      <small>
+        게이트웨이 세션만 지우면 Keycloak 의 SSO 쿠키가 남아 다음 접근이{' '}
+        <strong>비밀번호 없이 자동 완료</strong>된다. 그래서 <code>end_session</code> 까지 왕복한다.
+      </small>
+    </div>
   )
 }
 
@@ -111,7 +190,7 @@ export function App() {
         <h1>unigate 검증 콘솔</h1>
         <div className="header-right">
           <TenantNav />
-          <LogoutForm />
+          <SessionActions />
         </div>
       </header>
 
@@ -151,6 +230,8 @@ export function App() {
         </nav>
 
         <main>
+          {/* 어느 화면으로 돌아오든 보이도록 라우트 바깥에 둔다(착지는 콘솔 루트지만 고정은 아니다). */}
+          <LogoutNotice />
           <Routes>
             <Route path="/" element={<Overview />} />
             <Route path="/session" element={<Session />} />

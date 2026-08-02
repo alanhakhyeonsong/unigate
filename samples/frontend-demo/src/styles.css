@@ -12,6 +12,8 @@ h1 { font-size: 20px; margin: 0; }
 .header-right { margin-left: auto; display: flex; gap: 12px; align-items: center; }
 .header-right form { margin: 0; }
 .tenant { font-size: 14px; }
+/* 상태를 아직 모르거나 판단할 수 없을 때의 표기. 버튼처럼 보이면 안 된다 — 누를 것이 없다. */
+.muted { font-size: 13px; color: #888; }
 
 /* 본문 2단. 좁은 화면에서는 사이드바가 위로 접힌다. */
 .layout { display: grid; grid-template-columns: 200px 1fr; gap: 24px; align-items: start; }
