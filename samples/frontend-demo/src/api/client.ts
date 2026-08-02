@@ -58,15 +58,39 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   if (tenant) headers['X-Requested-Tenant'] = tenant
 
+  // ⚠️ **GET 도 기다린다.** 토큰을 쓰기 위해서가 아니라 **순서를 고정하기 위해서**다.
+  //
+  // ## 왜 (2026-08-02, alpha 실측)
+  // 게이트웨이는 `XSRF-TOKEN` 쿠키가 **없는** 요청을 만나면 그때마다 새 토큰을 만들어 쿠키로 내린다.
+  // 그래서 쿠키가 없는 첫 화면에서 `/csrf` 와 `/iam/debug/whoami` 가 **동시에** 나가면 서로 다른
+  // 토큰이 두 개 발급되고, 브라우저에는 **나중에 도착한 쪽**이 남는다.
+  //
+  //     /csrf   → 본문 T1 · 쿠키 T1     ← 로그아웃 폼은 T1 을 들고 있다
+  //     whoami  → (응답이) 쿠키 T2       ← 쿠키가 T2 로 덮인다
+  //     POST /logout  _csrf=T1 + 쿠키 T2 → double-submit 불일치 → **403**
+  //
+  // 증상이 지독하다: **첫 시도만 403, 새로고침하면 성공**한다(그때는 쿠키가 이미 있어 두 요청이
+  // 그것을 재사용하므로 덮어쓰기가 없다). 그리고 로그아웃 직후 다시 쿠키 없는 상태가 되어 재발한다.
+  // **순차 호출로는 절대 재현되지 않는다** — 병렬이어야 드러난다.
+  //
+  // ## 왜 이 방식으로 고치나
+  // `ensureCsrfToken()` 은 이미 in-flight 프로미스를 공유한다(`api/csrf.ts`). 여기서 GET 도 그것을
+  // 기다리게 하면 **게이트웨이로 나가는 첫 요청이 언제나 `/csrf` 하나**가 되고, 그 뒤 요청들은
+  // 쿠키를 실어 보내므로 서버가 재발급하지 않는다. 경쟁이 성립할 자리 자체가 사라진다.
+  //
+  // 서버에서 막으려면 익명 사용자에게도 안정적인 토큰 출처(=세션)가 필요한데, 세션 없는 사용자에게
+  // 세션을 만들어 주는 것은 훨씬 큰 대가다. 순서는 클라이언트가 정할 수 있는 문제다.
+  //
+  // 대가: 첫 요청 하나가 `/csrf` 왕복만큼 늦어진다. 이후는 캐시라 0 이고, same-origin 에서는
+  // 쿠키를 직접 읽어 네트워크 호출조차 없다.
+  const csrf = skipCsrf ? null : await ensureCsrfToken()
+
   let csrfHeaderName: string | undefined
-  if (method !== 'GET' && !skipCsrf) {
-    // ⚠️ 비동기다. cross-origin 배포에서는 쿠키를 못 읽어 게이트웨이에서 받아 오기 때문이다
-    // (`api/csrf.ts`). 헤더 이름도 서버가 알려준 것을 그대로 쓴다.
-    const csrf = await ensureCsrfToken()
-    if (csrf) {
-      headers[csrf.headerName] = csrf.token
-      csrfHeaderName = csrf.headerName
-    }
+  // 헤더에 **싣는 것**은 종전대로 쓰기 요청만이다. GET 은 순서만 기다렸을 뿐이다.
+  if (csrf && method !== 'GET') {
+    // 헤더 이름도 서버가 알려준 것을 그대로 쓴다 — 하드코딩하면 서버가 바꿨을 때 403 하나로만 드러난다.
+    headers[csrf.headerName] = csrf.token
+    csrfHeaderName = csrf.headerName
   }
 
   const url = toAbsolute(path)
