@@ -193,10 +193,38 @@ k6 run ... -e MAX_VUS=200 -e SLEEP_SECONDS=0 loadtest/scenario-b-capacity.js
 VU 수만큼 로그인해 `/iam/profile` 을 한두 번 치는 짧은 스크립트를 먼저 돌려
 `인증이 유지된다` 와 `세션 쿠키가 생겼다` 가 100% 인지 확인한 뒤 본 실행에 들어간다.
 
+## ⚠️ 파드를 늘리기 전에 DB 커넥션부터 계산한다
+
+노드 여유만 보고 replica 상한을 올리면 **파드는 스케줄되는데 부팅에서 죽는다.**
+
+```
+파드 수 × 풀 크기  ≤  max_connections − superuser_reserved − (다른 워크로드)
+```
+
+이 저장소의 alpha 공유 PostgreSQL 실측(2026-08-02): `max_connections=100`,
+`superuser_reserved=3` → **일반 슬롯 97개**. 풀을 명시하지 않으면 R2DBC·HikariCP 모두 **기본 10**이라,
+게이트웨이 8 + IAM 6 이면 140 이 되어 소진된다.
+
+부하 오버레이는 그래서 풀을 명시한다(GW 8×4=32 · IAM 6×5=30). 확인:
+
+```bash
+kubectl -n <ns> run pg-slot-check --rm -i --restart=Never --image=postgres:16-alpine \
+  --env="PGPASSWORD=$PW" --command -- psql -h <host> -U <user> -d <db> -c \
+  "SELECT current_setting('max_connections'), count(*) FROM pg_stat_activity;"
+```
+
+> ⚠️ **`minimum-idle` 을 함께 낮춰야 한다.** HikariCP 의 기본값은 `maximum-pool-size` 와 같아서,
+> max 만 줄이면 놀고 있어도 최대치를 붙들고 있다.
+>
+> 그리고 터지는 지점은 런타임이 아니라 **부팅**이다 — R2DBC 에 마이그레이션 기능이 없어
+> Flyway(JDBC)가 부팅 때 별도 커넥션을 열기 때문이다. 증상이 `CrashLoopBackOff` 라
+> 부하와 연결 짓기 어렵다. 경위는 `SCENARIOS.md` 의 "IAM 스케일 회차".
+
 ## 남은 것
 
-- IAM 을 스케일한 뒤 **게이트웨이 자체의 상한** 재측정 — 2026-08-02 회차는 IAM(replica 1)이
-  먼저 무너져 그 너머를 보지 못했다. IAM 에도 request 정상화 + HPA 가 필요하다
+- **게이트웨이 자체의 상한** — 2026-08-02 에 두 번 시도했지만 두 번 다 다른 것이 먼저 막았다
+  (IAM replica 1 → 공유 DB 커넥션). 셋을 다 풀자 이번엔 포화 전에 부하가 끝났다.
+  더 밀려면 VU·풀 크기·replica 상한을 **함께** 설계해야 한다
 - IAM 직격 시나리오(Bearer) — GW 우회 경로라 운영 경로는 아니지만 IAM 단독 용량 측정에 쓸 수 있다
 - 다운스트림 경로(`/api/**`) 시나리오 — 토큰 릴레이 + audience 검증까지 포함한 전 구간
 

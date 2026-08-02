@@ -1,0 +1,124 @@
+# IAM 부하테스트 전용 오버레이 — **운영 설정이 아니다.**
+#
+# 사용:
+#   deploy/deploy-alpha.sh --overlay deploy/helm/unigate-iam/values-alpha-loadtest.yaml iam
+#   (테스트가 끝나면 오버레이 없이 다시 배포해 원래 값으로 되돌린다)
+#
+# ── 왜 이 파일이 필요한가 ──────────────────────────────────────────────────────
+#
+# 2026-08-02 회차(`loadtest/SCENARIOS.md`)에서 게이트웨이를 8개까지 늘리고 부하를 올렸더니,
+# 576 req/s 에서 21.43% 가 5xx 로 무너졌다. 그런데 무너진 곳이 게이트웨이가 아니었다:
+#
+#   - 게이트웨이는 파드당 400~640m (limit 1000m) — 아직 여유
+#   - IAM 은 **replica 1개로 877m** (limit 의 88%)
+#   - 503 본문이 `reasonCode=iam_unavailable` → IAM Circuit Breaker 가 열린 것
+#   - IAM 로그는 깨끗했다 (회로가 열린 뒤로는 호출 자체가 없었으니)
+#
+# 즉 그 576 req/s 는 **게이트웨이의 상한이 아니라 IAM replica 1개가 정한 상한**이었다.
+# 게이트웨이 자체의 상한을 보려면 IAM 이 먼저 무너지지 않아야 한다.
+#
+# ⚠️ 이 오버레이는 **게이트웨이 부하 오버레이와 짝으로만** 의미가 있다. IAM 만 늘리고
+#    게이트웨이를 운영값(rate limit 5/s)으로 두면 요청이 게이트웨이에서 429 로 끊겨
+#    IAM 까지 오지도 않는다.
+
+# ⚠️ HPA 가 켜져 있으므로 이 값은 렌더되지 않는다(차트가 의도적으로 생략한다).
+#    남겨 두는 것은 오버레이를 걷었을 때 돌아갈 자리를 명시하기 위해서다.
+replicaCount: 1
+
+# ── requests — 부하테스트에서만 실사용에 맞춘다 ────────────────────────────────
+#
+# 게이트웨이 오버레이와 같은 이유다: HPA 의 utilization 은 **실사용 ÷ request** 라,
+# request 가 실사용보다 한참 낮으면 앱이 아니라 지표가 먼저 포화한다.
+#
+# 200m 은 게이트웨이와 맞춘 값이다. 직전 회차의 IAM 실사용 877m 은 **replica 1개일 때**의
+# 수치이므로 그대로 request 로 삼으면 안 된다 — 스케일아웃되면 그 부하가 여러 파드로 나뉜다.
+resources:
+  requests:
+    cpu: 200m
+    memory: 512Mi
+  limits:
+    cpu: 1000m
+    memory: 1536Mi
+
+# ── 노드 분산 ─────────────────────────────────────────────────────────────────
+# 게이트웨이와 같은 이유로 `ScheduleAnyway` 를 쓴다(`DoNotSchedule` 은 Pending 이
+# "용량 한계" 로 위장한다). labelSelector 는 라이브러리 차트가 채운다.
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+
+# ── HPA — 운영에서는 꺼져 있다 ────────────────────────────────────────────────
+#
+# `values-alpha.yaml` 은 "스케일아웃할 자리가 없어 끈다" 는 이유로 HPA 를 꺼 두었다.
+# 그 전제(2026-07-28 클러스터 포화)는 2026-08-02 현재 사실이 아니므로 부하 창에서만 켠다.
+#
+# 상한 6은 노드 수용량에서 나온 수다(200m × 6 = 1.2 core · 512Mi × 6 = 3Gi).
+# target 은 게이트웨이와 같은 60% 로 맞춘다 — 두 앱의 utilization 을 나란히 읽으려면
+# 기준이 같아야 한다(운영값 70% 와 다른 것은 의도다).
+#
+# ⚠️ IAM 은 스케줄러(outbox 워커)를 함께 돌린다. replica 를 늘려도 안전하다는 것은
+#    이미 확인됐다 — Flyway 는 DB 잠금으로 직렬화되고(values-alpha.yaml 주석),
+#    outbox 는 SKIP LOCKED 로 행을 나눠 집는다(Phase 8d). 프로필 조회 부하는
+#    outbox 를 만들지 않으므로 이 회차에서 워커는 사실상 놀고 있다.
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 60
+  targetMemoryUtilizationPercentage: null
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+        - type: Pods
+          value: 4
+          periodSeconds: 15
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 180
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+
+# replica 가 2 이상이 되므로 켠다.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+env:
+  SPRING_PROFILES_ACTIVE: alpha
+  # 부하 중 트레이싱 100% 는 그 자체가 오버헤드이자 측정 왜곡이다.
+  # ⚠️ 이 키는 `alpha.iam.secret.env` 에도 있다. k8s 는 같은 이름일 때 `env` 가
+  #    `envFrom`(Secret)을 **이기므로** 여기 값이 적용된다.
+  TRACING_SAMPLING_PROBABILITY: "0.05"
+
+  # ── ⚠️ 스케일 상한을 정하는 것은 CPU·메모리가 아니라 **DB 커넥션**이다 ──────
+  #
+  # 2026-08-02 1차 시도에서 이걸 놓쳐 **게이트웨이 파드 3개가 CrashLoopBackOff** 로 죽었다.
+  #
+  #     FATAL: remaining connection slots are reserved for roles with the SUPERUSER attribute
+  #       at org.flywaydb.core.internal.jdbc.JdbcUtils.openConnection
+  #
+  # 공유 PostgreSQL 실측: max_connections=100 · superuser_reserved=3 → **일반 슬롯 97개**.
+  # 그런데 풀 기본값을 그대로 두면 산술이 이렇게 된다:
+  #
+  #     게이트웨이 8 × R2DBC 10 = 80
+  #     IAM        6 × Hikari 10 = 60
+  #     ────────────────────────────
+  #     합계 140  >  97
+  #
+  # 더 고약한 것은 **터지는 지점이 런타임이 아니라 부팅**이라는 점이다. R2DBC 는 마이그레이션
+  # 기능이 없어 Flyway(JDBC)가 부팅 때 별도 커넥션을 여는데(CLAUDE.md §4), 기존 파드들이
+  # 슬롯을 다 잡고 있으면 **새 파드가 기동 자체를 못 한다.** 증상은 "용량 부족" 이 아니라
+  # CrashLoopBackOff 라 원인이 부하와 연결되지 않는다.
+  #
+  # 그래서 풀을 명시한다. 6 × 5 = 30 (게이트웨이 32 와 합쳐 62, 여유 35).
+  # ⚠️ Hikari 의 `minimum-idle` 기본값은 `maximum-pool-size` 와 같다 — 즉 **놀고 있어도
+  #    최대치를 붙들고 있다.** max 만 줄이고 min 을 두면 절반만 고친 것이다.
+  SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "5"
+  SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: "2"

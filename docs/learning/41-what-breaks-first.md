@@ -1,8 +1,9 @@
 # 41. 무엇이 먼저 무너지는가 — 포화의 위치를 찾는 법
 
 > 부하테스트의 결론은 "얼마나 처리하는가" 가 아니라 **"어디가 먼저 밀리는가"** 다.
-> 게이트웨이를 8개로 늘려도 상한을 정한 것은 replica 1개짜리 IAM 이었고,
-> 그 포화는 장애가 아니라 **3~18ms 짜리 거절**로 나타났다.
+> 게이트웨이를 8개로 늘려도 상한을 정한 것은 replica 1개짜리 IAM 이었고, 그 포화는 장애가
+> 아니라 **3~18ms 짜리 거절**로 나타났다. IAM 을 풀자 다음 상한은 앱 밖 —
+> **공유 DB 의 커넥션 슬롯**이었고, 이번엔 `CrashLoopBackOff` 라는 전혀 다른 얼굴로 왔다.
 > 관련: Phase 6+ · 브랜치 `test/loadtest-capacity-ceiling` ·
 > 코드 `loadtest/scenario-b-capacity.js` · `gateway/src/main/resources/application.yml` (resilience4j)
 
@@ -34,6 +35,7 @@ request 정상화 · 상한 상향 · 노드 분산 — 를 한꺼번에 풀고 
 | 실패한 요청의 흔적 | 백엔드 로그에 남는다 | **백엔드 로그가 깨끗하다** — 도달조차 안 했으니 | 게이트웨이가 대신 끊었다 |
 | 오토스케일 기준 | CPU 사용률(절대량) | **실사용 ÷ request** — request 를 낮추면 지표가 과민해진다 | 스케줄링과 오토스케일링이 같은 값을 공유한다 |
 | 부하 스크립트 수명 | 앱 API 가 그대로면 계속 유효 | **배포 구성이 바뀌면 낡는다** (착지 URL 등) | BFF 는 로그인 흐름 자체가 배포 값에 얽혀 있다 |
+| 스케일 상한 | 노드 CPU·메모리 | **거기에 더해 공유 DB 의 커넥션 슬롯** — 파드 수 × 풀 크기 | 파드가 늘면 풀도 파드 수만큼 곱해진다. 스케줄은 통과하는데 **부팅이 실패**한다 |
 
 ## 3. 동작 원리
 
@@ -319,6 +321,121 @@ unigate-gateway-hpa   Deployment/unigate-gateway-deploy   cpu: 16%/60%   2   4  
 관찰: `RATELIMIT_*` 환경변수가 사라져 운영 기본값(5/10/1)으로 돌아갔고,
 `maxReplicas` 도 4로, 분산 제약도 제거됐다. **완화 프로파일 동안 게이트웨이는 사실상 무방비다.**
 
+### 확인 8 — IAM 을 스케일했더니 병목이 옮겨갔다 (그리고 다른 것이 터졌다)
+
+IAM 에 request 200m + HPA(2~6) + 노드 분산을 넣고 **같은 부하**(200 VU · think time 0)를 다시 걸었다.
+부하 조건을 그대로 둔 것은 IAM 스케일의 효과만 분리하기 위해서다.
+
+```
+요청 수 : 385150 (583.53 req/s)   실패율 : 12.63%   (직전 21.43%)
+```
+
+병목은 실제로 이동했다 — IAM 은 파드당 110~316m 로 여유가 생기고, 게이트웨이가 `1008m`
+(limit 1000m)에 닿았다. 여기까지는 의도한 대로였다. **그런데:**
+
+```bash
+kubectl -n <ns> get pods
+```
+
+```
+unigate-gateway-deploy-...-75nmr  0/1  CrashLoopBackOff  6
+unigate-gateway-deploy-...-g94kg  0/1  CrashLoopBackOff  6
+unigate-gateway-deploy-...-kd5nc  0/1  CrashLoopBackOff  6
+```
+
+```bash
+kubectl -n <ns> logs <pod> --previous --tail=30
+```
+
+```
+FATAL: remaining connection slots are reserved for roles with the SUPERUSER attribute
+SQL State  : 53300
+	at org.flywaydb.core.internal.jdbc.JdbcUtils.openConnection(JdbcUtils.java:71)
+	at org.flywaydb.core.FlywayExecutor.execute(FlywayExecutor.java:136)
+	at org.springframework.boot.autoconfigure.flyway.FlywayMigrationInitializer.afterPropertiesSet
+```
+
+관찰: **DB 커넥션 슬롯이 소진돼 새 파드가 기동 자체를 못 했다.** 터진 곳은 런타임이 아니라
+**Flyway 가 커넥션을 여는 부팅 시점**이다.
+
+### 확인 9 — 공유 PostgreSQL 의 실제 한도
+
+```bash
+kubectl -n <ns> run pg-slot-check --rm -i --image=postgres:16-alpine -- \
+  psql ... -c "SELECT current_setting('max_connections'), count(*) FROM pg_stat_activity;"
+```
+
+```
+max | total
+100 | 12
+```
+
+`superuser_reserved_connections=3` 이므로 **일반 슬롯은 97개**다. 그때의 산술:
+
+| | 파드 | 풀 기본값 | 커넥션 |
+|---|---|---|---|
+| 게이트웨이 | 8 | R2DBC 10 | 80 |
+| IAM | 6 | HikariCP 10 | 60 |
+| | | 합계 | **140 > 97** |
+
+관찰: **노드가 41개 파드를 받는다는 것이 8개로 올려도 된다는 뜻이 아니었다.**
+스케줄 가능 여부만 보고 상한을 정했고, 그 판단에 DB 는 들어 있지 않았다.
+
+### 확인 10 — 풀을 명시하고 다시: 실패가 사라졌다
+
+```yaml
+SPRING_R2DBC_POOL_MAX_SIZE: "4"                    # GW 8 × 4 = 32
+SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "5"    # IAM 6 × 5 = 30
+SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: "2"
+```
+
+```
+✓ 429 rate==0   ✓ checks rate>0.99   ✓ p(95)<1000   ✓ p(99)<2000
+
+  요청 수 : 323899 (490.75 req/s)
+  실패율  : 0%
+  지연    : avg=249.92ms med=201.73ms p(95)=593.85ms max=6988.44ms
+  checks  : 969094 통과 / 3 실패
+```
+
+5xx 가 **81,489건 → 3건**이 됐다.
+
+### 확인 11 — 부하 중 DB 슬롯을 실측해 산술을 검증했다
+
+정상 상태에서 한 번 재 봤다.
+
+```
+db          | count
+unigate_iam |  31      ← IAM 6파드 × 5 + 측정용 psql 1
+unigate     |  23      ← GW 8파드 × 4 상한 중 실사용
+(bg)        |   5
+                        총 59 / 100   여유 41
+```
+
+같은 시점 파드 건강(관측 스크립트에 `ready`·`restarts` 를 되돌린 뒤):
+
+```
+16:02:31 | GW 246%/60% want=8 8/8 restarts=0 bad=0 | IAM 165%/60% want=6 6/6 restarts=0 bad=0
+           gwNodes: 2 node-0  3 node-1  3 node-3 | iamNodes: 2 node-0  2 node-1  2 node-3
+           gw CPU 333~594m · iam CPU 254~470m
+```
+
+관찰: 전 구간 `restarts=0`. 예측(GW 32 · IAM 30)과 실측(23 · 31)이 맞았고,
+**양쪽 다 limit(1000m)에 여유가 있는 채로 threshold 를 전부 통과했다** — 즉 이번에도 포화 전이다.
+
+### 확인 12 — 처리량이 줄었는데 결과는 나아졌다
+
+| 회차 | 구성 | req/s | 실패율 | 판정 |
+|---|---|---|---|---|
+| 2차 | GW 8 · IAM 1 | 576.17 | 21.43% | IAM CB 열림 |
+| 3차 | GW 8(실제 5) · IAM 6 · 풀 기본값 | **583.53** | 12.63% | GW 3개 CrashLoop |
+| 4차 | GW 8 · IAM 6 · 풀 명시 | **490.75** | **0%** | 전부 통과 |
+
+관찰: **3차가 4차보다 처리량이 높은데 3차는 실패한 회차다.** 503 은 백엔드를 타지 않아 빨리
+돌아오므로 실패가 많을수록 초당 응답 수가 올라간다. 3차에서 실패분을 빼면
+583 × 0.874 ≈ 510 req/s 로 4차와 비슷해진다. 지연도 4차가 더 느리다(p95 594ms vs 439ms) —
+진짜로 일을 했기 때문이다.
+
 ## 5. 함정 / 실패 모드
 
 | 함정 | 증상 | 원인 | 해결 |
@@ -331,6 +448,10 @@ unigate-gateway-hpa   Deployment/unigate-gateway-deploy   cpu: 16%/60%   2   4  
 | **착지 URL 로 로그인 성공 판정** | 앱은 멀쩡한데 부하테스트만 죽는다. 메시지는 realm·redirect_uri 를 가리킨다 | 배포 구성(`UNIGATE_FRONTEND_BASE_URI`)이 바뀌면 착지가 바뀐다 | 판정을 **세션 쿠키**로. 실패 메시지에 착지 URL 을 넣어 다음엔 바로 보이게 |
 | **고정 think time 으로 포화점 탐색** | VU 를 올려도 요청률이 비례해 안 오른다 | `sleep(0.5)` 가 VU 당 요청률에 천장을 만든다 | 포화 탐색에는 `SLEEP_SECONDS=0` |
 | **과도기 편차를 정상 상태로 오독** | "파드마다 부하가 4배 차이난다" | 새 파드가 Ready 되기 전 구간 | Ready 수가 안정된 뒤 구간만 결론에 쓴다 |
+| **스케일 상한을 노드 여유로만 정한다** | 파드는 스케줄되는데 **`CrashLoopBackOff`** 로 죽는다. 증상이 부하와 연결되지 않는다 | 공유 DB 의 커넥션 슬롯 소진. 파드 수 × 풀 크기가 `max_connections` 를 넘었다 | 상한을 정하기 전에 **파드 수 × 풀 크기 ≤ 일반 슬롯**을 계산한다. 풀을 명시하지 않으면 기본값 10이다 |
+| **`minimum-idle` 을 두고 max 만 줄인다** | 풀을 줄였는데 커넥션이 안 준다 | HikariCP 의 `minimum-idle` **기본값은 `maximum-pool-size`** — 놀아도 최대치를 붙든다 | `SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE` 을 함께 낮춘다 |
+| **관측에서 Ready 를 뺀다** | 파드 3개가 죽어 있는데 부하가 끝날 때까지 모른다 | `desired` 는 HPA 가 **원하는 수**일 뿐 일하는 파드 수가 아니다 | 관측에 `ready=N/M` 과 `restarts` 를 반드시 남긴다 |
+| **실패율 없이 처리량만 비교** | 더 나쁜 회차가 더 높은 req/s 를 낸다 | 503 은 백엔드를 타지 않아 **빨리 돌아온다** → 실패가 많을수록 초당 응답 수가 오른다 | 처리량은 항상 실패율과 짝으로 읽는다 |
 
 ### 이번에 새로 배운 판단 기준
 
@@ -338,6 +459,22 @@ unigate-gateway-hpa   Deployment/unigate-gateway-deploy   cpu: 16%/60%   2   4  
 576 req/s 는 게이트웨이의 수치가 아니라 **IAM replica 1개가 정한 전 구간 상한**이었다.
 경로 위에 스케일 정책이 다른 앱이 섞여 있으면, 가장 약한 고리를 찾기 전의 수치는
 "어떤 조합에서 이만큼 나왔다" 이상을 말하지 못한다.
+
+그리고 그 "약한 고리" 는 **앱 안에만 있지 않다.** IAM 을 스케일해 앱 쪽 고리를 풀자
+다음 고리가 **공유 PostgreSQL 의 커넥션 슬롯**이었다. 스케일 상한을 정하는 자원 목록은
+이렇게 늘어난다:
+
+```mermaid
+flowchart LR
+    A["노드 CPU·메모리"] --> B["파드를 몇 개 띄울 수 있나"]
+    C["DB max_connections"] --> D["파드 수 × 풀 크기"]
+    B --> E["실제 상한 = 둘 중 작은 쪽"]
+    D --> E
+```
+
+2026-07-28 회차는 A 만 봤고(그때는 그게 실제로 병목이었다), 2026-08-02 회차는 A 가 풀리자
+**C 를 보지 않은 채 상한을 올렸다가 CrashLoopBackOff 를 만났다.**
+제약이 하나 풀리면 다음 제약을 다시 찾아야 하지, 이전 계산을 그대로 확장하면 안 된다.
 
 ## 6. 남은 의문
 
@@ -349,10 +486,21 @@ unigate-gateway-hpa   Deployment/unigate-gateway-deploy   cpu: 16%/60%   2   4  
       → README "남은 것" 의 **클러스터 내부 k6 Job 은 이 근거로 접었다**
 - [x] 576 req/s 에서 무엇이 무너졌나 → **IAM CB.** 본문 `reasonCode=iam_unavailable` 로 확정 (§4 확인 6)
 
+- [x] IAM 을 스케일하면 CB 열림이 사라지는가 → **사라진다.** 5xx 81,489건 → **3건** (§4 확인 10)
+- [x] 그러면 그 다음 상한은 무엇인가 → **공유 PostgreSQL 의 커넥션 슬롯**(max_connections=100).
+      파드 수 × 풀 크기가 140 이 되어 새 파드가 부팅에 실패했다 (§4 확인 8·9)
+- [x] 풀을 명시하면 몇 개가 도는가 → **14개 파드가 59 슬롯**으로 돈다 (§4 확인 11, 실측)
+
 ### 아직 모르는 것
 
-- [ ] **게이트웨이 자체의 상한은 얼마인가** — IAM 이 먼저 막혀 그 너머를 못 봤다.
-      IAM 에 request 정상화 + HPA 를 넣고 같은 부하를 다시 걸면 답이 나온다
+- [ ] **게이트웨이 자체의 상한은 얼마인가** — IAM 을 풀었더니 이번엔 DB 가 막았고,
+      그것까지 풀자 **포화 전에 부하가 끝났다**(GW 333~594m · IAM 254~470m, limit 1000m).
+      더 밀려면 VU 를 올려야 하는데 그때 **DB 슬롯 산술을 다시 해야 한다** —
+      상한을 정하는 자원이 하나 늘었으므로, 풀 크기 · replica 상한 · VU 를 함께 설계해야 한다
+- [ ] **풀을 4·5로 줄인 것이 성능을 깎았는가** — 4차는 실패 0% 로 통과했지만
+      p95 가 594ms 로 3차(439ms)보다 느리다. 실패분 때문이라고 해석했지만
+      **커넥션 대기가 섞였을 가능성**을 분리하지 못했다. Hikari/R2DBC 풀의 대기 시간 지표
+      (`hikaricp.connections.pending` 등)를 부하 중에 봐야 갈린다
 - [ ] **회로가 몇 번 열렸다 닫혔나** — 실패율 21.43% 가 "계속 열려 있었다" 인지
       "열림·half-open 을 반복했다" 인지 구분하지 못했다. resilience4j 는 전이를 로그로 내지 않으므로,
       `/actuator/circuitbreakerevents` 를 부하 중 폴링하거나 상태 전이를 로그로 내는 이벤트 리스너가 필요하다.
