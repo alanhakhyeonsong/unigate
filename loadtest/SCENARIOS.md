@@ -347,6 +347,155 @@ k6 가 관측한 `max=5115.60ms` 가 `timelimiter.instances.iam.timeout-duration
 다음에 게이트웨이 상한을 보려면 **IAM 을 먼저 스케일**해야 한다(request 정상화 + HPA).
 IAM 을 1개로 둔 채 게이트웨이만 늘리는 것은 이 경로에서 아무 의미가 없다.
 
+> ✅ **같은 날 그렇게 했다.** 그리고 **또 다른 것이 먼저 무너졌다** — 아래 "IAM 스케일 회차".
+
+---
+
+## 측정 결과 — 2026-08-02 (IAM 스케일) · 진짜 상한은 DB 커넥션이었다
+
+IAM 에도 request 정상화(200m) + HPA(2~6) + 노드 분산을 넣고 **같은 부하**(200 VU · think time 0)를
+다시 걸었다. 부하 조건을 그대로 둔 것은 **IAM 스케일의 효과만 분리**하기 위해서다.
+
+### 3차 — IAM 스케일, 풀 기본값 그대로 (실패한 회차)
+
+```
+✗ checks rate>0.99
+
+  요청 수      : 385150 (583.53 req/s)
+  실패율       : 12.63%      ← 21.43% 에서 줄었지만 여전히 실패
+  지연         : avg=210.8ms p(95)=439.57ms max=5799.23ms
+```
+
+병목은 실제로 **이동했다.** IAM 은 6개로 늘어 파드당 110~316m 로 여유가 생겼고,
+대신 게이트웨이가 `1008m`(limit 1000m)에 닿았다. 여기까지는 의도한 대로였다.
+
+**그런데 게이트웨이 파드 3개가 `CrashLoopBackOff` 였다.**
+
+```
+unigate-gateway-deploy-...-75nmr  0/1  CrashLoopBackOff  6
+unigate-gateway-deploy-...-g94kg  0/1  CrashLoopBackOff  6
+unigate-gateway-deploy-...-kd5nc  0/1  CrashLoopBackOff  6
+```
+
+```
+FATAL: remaining connection slots are reserved for roles with the SUPERUSER attribute
+SQL State  : 53300
+	at org.flywaydb.core.internal.jdbc.JdbcUtils.openConnection(JdbcUtils.java:71)
+	at org.flywaydb.core.FlywayExecutor.execute(FlywayExecutor.java:136)
+	at org.springframework.boot.autoconfigure.flyway.FlywayMigrationInitializer.afterPropertiesSet
+```
+
+공유 PostgreSQL 을 실측해 보니:
+
+```sql
+SELECT current_setting('max_connections'), count(*) FROM pg_stat_activity;
+-- max_connections=100 · superuser_reserved=3  →  일반 슬롯 97개
+```
+
+풀 기본값(둘 다 10)을 그대로 둔 산술은 이랬다:
+
+| | 파드 | 풀 | 커넥션 |
+|---|---|---|---|
+| 게이트웨이 | 8 | R2DBC 10 | 80 |
+| IAM | 6 | HikariCP 10 | 60 |
+| | | **합계** | **140 > 97** |
+
+> **터지는 지점이 런타임이 아니라 부팅이라는 것**이 이 함정의 핵심이다.
+> R2DBC 에는 마이그레이션 기능이 없어 **Flyway(JDBC)가 부팅 때 별도 커넥션**을 연다
+> (`CLAUDE.md` §4). 기존 파드가 슬롯을 다 잡고 있으면 **새 파드는 기동 자체를 못 한다.**
+> 증상이 "느려짐"이나 "503" 이 아니라 `CrashLoopBackOff` 라 **부하와 연결되지 않는다.**
+
+그래서 이 회차의 수치는 전부 다시 읽어야 한다:
+
+- replica 8 이 아니라 **실제로는 5개**가 처리했다
+- "게이트웨이가 limit 에 닿았다"(1008m)는 8개가 아니라 **5개 기준**이었다
+- 12.63% 실패도 IAM 이 아니라 **파드 결손**이 상당 부분이다
+
+### ⚠️ 관측이 이 실패를 놓쳤다
+
+1차 회차 관측 스크립트에는 `ready=N/M` 과 `pending` 이 있었는데, IAM 을 추가하며 개편할 때
+**Ready 수를 빼버렸다.** 그 결과 노드 분포 칸에 `3 8m6s` 라는 값이 찍혔지만
+(비정상 파드는 `kubectl get pods -o wide` 의 컬럼이 밀린다) 파싱 잡음으로 넘겼다.
+
+`desired=8` 은 **HPA 가 원하는 수**일 뿐 일하는 파드 수가 아니다. 지금은 다시 넣었다:
+
+```
+16:02:31 | GW 246%/60% want=8 8/8 restarts=0 bad=0 | IAM 165%/60% want=6 6/6 restarts=0 bad=0
+```
+
+### 4차 — 풀 크기를 명시하고 다시 (통과한 회차)
+
+```yaml
+# gateway
+SPRING_R2DBC_POOL_MAX_SIZE: "4"        # 8 × 4 = 32
+SPRING_R2DBC_POOL_INITIAL_SIZE: "2"
+# iam
+SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "5"   # 6 × 5 = 30
+SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: "2"
+```
+
+> ⚠️ **Hikari 의 `minimum-idle` 기본값은 `maximum-pool-size` 와 같다** — 놀고 있어도 최대치를
+> 붙들고 있다. max 만 줄이고 min 을 두면 절반만 고친 것이다.
+
+```
+✓ http_req_failed{status:429} rate==0   ✓ checks rate>0.99
+✓ p(95)<1000                            ✓ p(99)<2000
+
+  요청 수      : 323899 (490.75 req/s)
+  실패율       : 0%
+  429 발생     : 0
+  지연         : avg=249.92ms med=201.73ms p(95)=593.85ms max=6988.44ms
+  checks       : 969094 통과 / 3 실패
+  부하 생성기  : blocked p(95)=0ms · connecting p(95)=0ms · waiting p(95)=551.81ms
+```
+
+부하 중 DB 를 실측해 산술이 맞는지 확인했다:
+
+```
+db          | count
+unigate_iam |  31      ← IAM 6파드 × 5 + 측정용 psql 1
+unigate     |  23      ← GW 8파드 × 4 상한 중 실사용
+(bg)        |   5
+총 59 / 100                여유 41
+```
+
+같은 시점의 파드 건강:
+
+```
+GW  246%/60% want=8 8/8 restarts=0 bad=0   nodes 2/3/3   CPU 333~594m
+IAM 165%/60% want=6 6/6 restarts=0 bad=0   nodes 2/2/2   CPU 254~470m
+```
+
+전 구간 `restarts=0`. `bad>0` 은 15:58:40 한 시점뿐이고 그건 IAM 스케일아웃 중
+파드가 생성되던 과도기였다(재시작이 아니다).
+
+### ⚠️ 처리량이 줄었는데 결과는 나아졌다 — 빠른 실패는 처리량을 부풀린다
+
+| 회차 | 구성 | req/s | 실패율 | 판정 |
+|---|---|---|---|---|
+| 2차 | GW 8 · IAM 1 | 576.17 | 21.43% | IAM CB 열림 |
+| 3차 | GW 8(실제 5) · IAM 6 · 풀 기본값 | **583.53** | 12.63% | GW 3개 CrashLoop |
+| **4차** | GW 8 · IAM 6 · **풀 명시** | **490.75** | **0%** | **전부 통과** |
+
+3차가 4차보다 **처리량이 높다.** 그런데 3차는 실패한 회차다.
+
+> **503 은 백엔드를 타지 않아 빨리 돌아온다.** 그래서 실패가 많을수록 초당 응답 수가 올라간다.
+> 3차의 583 req/s 에서 실패분을 빼면 583 × 0.874 ≈ **510 req/s** 로, 4차의 490 과 비슷하다.
+> **실패율을 함께 보지 않은 처리량 비교는 거꾸로 된 결론을 만든다.**
+
+지연도 이 해석을 뒷받침한다 — 4차가 더 느리다(p95 594ms vs 439ms). 진짜로 일을 했기 때문이다.
+
+### 이 회차가 확정한 것 / 못 한 것
+
+- ✅ **IAM 을 스케일하면 CB 열림이 사라진다** (5xx 81,489건 → **3건**)
+- ✅ **스케일 상한을 정한 것은 CPU·메모리가 아니라 DB 커넥션이었다** (max_connections=100)
+- ✅ **풀을 명시하면 14개 파드가 59 슬롯으로 돈다** (실측)
+- ✅ **490 req/s 를 실패 0% · p95 594ms 로 처리한다**
+- ❌ **게이트웨이의 진짜 상한은 여전히 모른다** — 이번에도 포화 전에 멈췄다.
+  GW 333~594m · IAM 254~470m 로 양쪽 다 limit(1000m)에 여유가 있었고 threshold 도 다 통과했다.
+  더 밀려면 VU 를 올려야 하는데, 그러면 **DB 슬롯 산술을 다시 계산**해야 한다 —
+  이제 상한을 정하는 자원이 하나 더 늘었다.
+
 ---
 
 ## ⚠️ 부하 스크립트도 낡는다 — 착지 URL 로 성공을 판정했던 기록 (2026-08-02)
