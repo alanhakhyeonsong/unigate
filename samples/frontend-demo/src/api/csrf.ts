@@ -44,7 +44,19 @@ export function readCsrfCookie(): string | null {
 }
 
 let cached: CsrfToken | null = null
-/** 동시에 여러 요청이 토큰을 찾을 때 `/csrf` 를 N번 부르지 않게 한다. */
+/**
+ * 동시에 여러 요청이 토큰을 찾을 때 `/csrf` 를 N번 부르지 않게 한다.
+ *
+ * ## 이 공유가 **정확성**의 일부다 (2026-08-02 실측 후 추가)
+ * 원래는 "중복 호출 절약" 목적이었는데, 실제로는 그보다 중요한 역할을 한다.
+ *
+ * 게이트웨이는 `XSRF-TOKEN` 쿠키가 없는 요청마다 **새 토큰을 만들어 쿠키로 내린다.** 따라서
+ * 쿠키 없는 상태에서 `/csrf` 가 두 번 나가면 토큰이 둘 생기고, 뒤에 도착한 쪽이 앞의 쿠키를
+ * 덮어 **앞의 토큰을 들고 있던 폼이 403** 이 된다.
+ *
+ * 그래서 `api/client.ts` 는 GET 요청까지 이 프로미스를 기다리게 해서, 게이트웨이로 나가는
+ * **첫 요청이 언제나 `/csrf` 하나**가 되도록 순서를 고정한다. 상세는 그쪽 주석.
+ */
 let inflight: Promise<CsrfToken | null> | null = null
 
 async function fetchToken(): Promise<CsrfToken | null> {

@@ -267,6 +267,9 @@ FE가 토큰을 보게 되는 순간 BFF를 쓰는 이유가 사라진다.
 | **캐시 키에 테넌트를 빼먹는다** | 다른 테넌트 목록이 그대로 보이고 **네트워크 요청조차 안 나간다** | 테넌트가 헤더로만 전달돼 URL 이 같다. 서버가 격리해도 클라이언트 캐시가 무너뜨린다 → queryKey 에 테넌트 포함 |
 | **로그인 후 착지가 게이트웨이 루트** | **로그인은 성공하는데 FE 가 안 뜬다.** 세션도 정상이고 로그도 깨끗해 원인을 Keycloak 으로 오해한다 | 성공 핸들러 기본 착지가 `/` 다. Keycloak 의 `redirectUris` 는 **인가 코드 배달 주소**일 뿐 착지가 아니다 → `unigate.frontend.base-uri` 주입. **로그아웃도 같은 값**을 봐야 한다 |
 | **CSRF 쿠키를 FE 가 못 읽는다** | **GET 은 전부 200 인데 쓰기만 403** (로그아웃·프로필 수정 등 전부). 읽기가 되니 인증 문제로 안 보인다 | `XSRF-TOKEN` 에 `Domain` 이 없어 host-only. **전송(SameSite)은 site 기준, 읽기(`document.cookie`)는 host 기준**이라 `SESSION` 만 실린다 → `GET /csrf` 로 받아 간다. 접근 제어는 **CORS 허용 목록**이 대신하므로 그 목록이 곧 방어선이다 |
+| **로그인 착지가 저장된 요청에 덮인다** (Phase 9) | **로그인은 성공하는데 엉뚱한 곳으로 착지**한다. `unigate.frontend.base-uri` 를 아무리 확인해도 값은 맞다. 로그도 깨끗하다 | 성공 핸들러가 `requestCache.getRedirectUri(...).defaultIfEmpty(location)` 이라 **저장분이 설정값을 이긴다**. 저장 주체는 분기형 진입점의 302 분기(`RedirectServerAuthenticationEntryPoint.saveRequest`) → 저장·읽기 **양쪽 인스턴스**에서 `NoOpServerRequestCache`. ⚠️ `http.requestCache { }` 로는 안 된다 — 직접 `new` 한 객체엔 주입되지 않는다 |
+| **미인증 로그아웃이 없는 경로로 간다** (Phase 9) | 로그아웃 후 게이트웨이 **404**. 인증 상태에서는 정상이라 재현 조건이 안 보인다 | `setPostLogoutRedirectUri` 는 **OIDC 인증 상태에서만** 쓰인다. 미인증은 위임체 기본값 `/login?logout` 으로 가는데 그 경로가 없다 → `setLogoutSuccessUrl` 로 fallback 도 FE 로. **`{baseUrl}` 을 그대로 쓰면 안 된다**(치환 주체가 없어 `/%7BbaseUrl%7D/` 가 된다) |
+| **CSRF 토큰 쿠키가 덮인다** (Phase 9) | **첫 로그아웃만 403**, 새로고침 후 재시도하면 성공. 로그아웃 직후 다시 재발 | 게이트웨이는 `XSRF-TOKEN` 쿠키가 **없는** 요청마다 새 토큰을 발급한다. 쿠키 없는 첫 화면에서 `/csrf` 와 다른 요청이 **동시에** 나가면 나중 응답이 쿠키를 덮어 double-submit 이 깨진다 → FE 가 첫 요청을 `/csrf` 로 **직렬화**한다. **순차 호출로는 재현되지 않는다** |
 | **응답 헤더를 FE 가 못 읽는다** (Phase 9h) | 서버는 헤더를 붙였고 응답도 정상 도착하는데 `res.headers.get(...)` 만 **null**. 에러도 경고도 없다. **로컬(dev proxy)에서는 잘 읽혀** 분리 배포에서만 드러난다 | cross-origin 에서 스크립트에 노출되는 응답 헤더는 **CORS-safelisted 7개뿐**(`Cache-Control` `Content-Language` `Content-Length` `Content-Type` `Expires` `Last-Modified` `Pragma`). 그 밖은 서버가 `exposedHeaders` 로 **명시 노출**해야 한다 → `CorsConfig.EXPOSED_HEADERS`. **요청 허용 목록(`allowedHeaders`)과 다른 목록**이다 |
 
 > **CSRF 세 조각은 하나라도 빠지면 조용히 실패한다.** ①이 없으면 토큰이 세션에만 있어 클라이언트가
@@ -275,7 +278,12 @@ FE가 토큰을 보게 되는 순간 BFF를 쓰는 이유가 사라진다.
 > 응답만 봐서는 구분되지 않는다 — `org.springframework.security.web.server.csrf` 를 TRACE 로 켜야 갈린다.
 
 > **CSRF 쿠키** 까지의 네 줄은 **샘플 FE 를 실제로 붙이며 겪은 것**이다. 상세와 실측은 `docs/learning/26`.
-> 마지막 **응답 헤더** 줄은 Phase 9h 에서 `Retry-After` 로 드러났다(PR #50) — 뿌리가 같다.
+> **응답 헤더** 줄은 Phase 9h 에서 `Retry-After` 로 드러났다(PR #50) — 뿌리가 같다.
+>
+> 마지막 세 줄(**로그인 착지 · 미인증 로그아웃 · CSRF 토큰 쿠키**)은 성격이 다르다. 앞의 것들이
+> "안 붙여서 안 되는" 누락이라면, 이 셋은 **올바른 값이 있는데 다른 것이 그 값을 이기는** 부류다.
+> 그래서 설정을 아무리 확인해도 원인이 안 보인다. 셋 다 alpha 에서만 드러났고 상세는
+> `docs/learning/42`. **설정이 맞는데 동작이 틀리면, 설정을 그만 보고 그 값을 읽는 코드를 본다.**
 > **분리 배포에서만 보이는 것은 "동작"이 아니라 "가시성"** 이고, 그래서 서버 로그에는 아무 흔적이 없다.
 >
 > **XHR 리다이렉트가 왜 헷갈리는가**: 302 응답을 `fetch`가 그대로 따라가 Keycloak 로그인 페이지를 요청하고,
