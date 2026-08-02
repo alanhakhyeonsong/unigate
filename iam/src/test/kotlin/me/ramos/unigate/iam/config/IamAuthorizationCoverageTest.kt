@@ -7,6 +7,7 @@ import io.kotest.matchers.shouldBe
 import org.springframework.beans.factory.config.BeanDefinition
 import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider
 import org.springframework.core.annotation.AnnotatedElementUtils
+import org.springframework.core.env.MapPropertySource
 import org.springframework.core.env.StandardEnvironment
 import org.springframework.core.type.filter.AnnotationTypeFilter
 import org.springframework.util.AntPathMatcher
@@ -54,7 +55,15 @@ class IamAuthorizationCoverageTest :
     fun controllerClasses(): List<Class<*>> {
       val scanner = ClassPathScanningCandidateComponentProvider(false)
       scanner.environment =
-        StandardEnvironment().apply { setActiveProfiles(*PROFILES_THAT_CAN_EXPOSE_ENDPOINTS) }
+        StandardEnvironment().apply {
+          setActiveProfiles(*PROFILES_THAT_CAN_EXPOSE_ENDPOINTS)
+          // ⚠️ 프로파일만으로는 부족하다 — `@ConditionalOnProperty` 컨트롤러는 **속성**으로 갈린다.
+          // 스캐너는 `@Conditional` 계열을 전부 평가하므로, 속성이 없으면 그 엔드포인트가
+          // 조용히 후보에서 빠지고 테스트는 통과한다. 프로파일과 같은 함정이 한 겹 더 있는 셈이다.
+          propertySources.addFirst(
+            MapPropertySource("probe-switches", PROPERTIES_THAT_CAN_EXPOSE_ENDPOINTS),
+          )
+        }
       scanner.addIncludeFilter(AnnotationTypeFilter(RestController::class.java))
       return scanner
         .findCandidateComponents(CONTROLLER_PACKAGE)
@@ -164,6 +173,19 @@ class IamAuthorizationCoverageTest :
      * 커버리지에서 **조용히 사라진다**(스캐너가 `@Profile` 을 평가하기 때문 — 위 KDoc).
      */
     val PROFILES_THAT_CAN_EXPOSE_ENDPOINTS = arrayOf("local", "alpha")
+
+    /**
+     * 엔드포인트를 노출할 수 있는 **설정 스위치** 전부.
+     *
+     * [PROFILES_THAT_CAN_EXPOSE_ENDPOINTS] 와 같은 목적이고 축만 다르다 — 어떤 환경에서든
+     * 존재할 수 있는 엔드포인트는 여기서 **전부 보여야** 한다. 스위치를 새로 만들고 이 목록에
+     * 넣는 것을 잊으면, 그 엔드포인트는 커버리지에서 사라지면서 테스트는 초록으로 남는다.
+     */
+    val PROPERTIES_THAT_CAN_EXPOSE_ENDPOINTS =
+      mapOf<String, Any>(
+        // me.ramos.unigate.iam.adapter.iamIn.CallerProbeController
+        "unigate.iam.probe.caller.enabled" to "true",
+      )
 
     const val ADMIN_CONTROLLER_MARKER = "Admin"
     const val ACTUATOR_PREFIX = "/actuator"

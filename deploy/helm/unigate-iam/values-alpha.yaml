@@ -50,3 +50,12 @@ env:
   # 스케줄러가 도는 인스턴스를 줄이고 싶다면 여기서 끈다(기본 true).
   # 지금은 모든 인스턴스가 워커를 돌린다 — SKIP LOCKED 라 안전하고, 처리량도 함께 늘어난다.
   IAM_OUTBOX_POLLING_ENABLED: "true"
+  # 진단 프로브(`GET /iam/debug/whoami`). 검증 콘솔이 토큰 클레임·전파를 눈으로 확인하는 수단이다.
+  #
+  # alpha 에서 켜는 이유: 분리 배포의 CORS·로그인 착지·claim 전파는 **로컬에서 재현되지 않는다**
+  # (docs/learning/42). 확인 수단이 local 에만 있으면 정작 문제가 나는 환경에서 눈이 없다.
+  #
+  # ⚠️ 켜도 인증은 필요하고(`/iam/debug/**` 는 공개 경로가 아니다), 응답은 호출자 **자기 토큰**의
+  # 클레임뿐이다. 토큰 원문·서명은 어떤 경우에도 실리지 않는다(CLAUDE.md §8).
+  # 끄고 싶으면 이 값만 "false" 로 — 코드 배포가 필요 없다.
+  IAM_CALLER_PROBE_ENABLED: "true"

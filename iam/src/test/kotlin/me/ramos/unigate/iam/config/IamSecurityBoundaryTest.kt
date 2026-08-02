@@ -64,8 +64,7 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
   ProblemDetailAccessDeniedHandler::class,
 )
 @EnableConfigurationProperties(KeycloakAdminProperties::class)
-// CallerProbeController 가 @Profile("local") 이라 프로파일을 켜야 라우트가 존재한다.
-// 동시에 IamSecurityConfig 의 LOCAL_ONLY_PUBLIC_PATHS 분기도 이 프로파일에서만 켜진다.
+// IamSecurityConfig 의 LOCAL_ONLY_PUBLIC_PATHS 분기가 이 프로파일에서만 켜진다.
 @ActiveProfiles("local")
 @TestPropertySource(
   properties = [
@@ -76,6 +75,9 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
     "unigate.iam.keycloak.client-id=unigate-iam",
     "unigate.iam.keycloak.client-secret=not-a-real-secret",
     "unigate.iam.security.expected-audience=unigate-iam",
+    // CallerProbeController 는 @ConditionalOnProperty 라 이 값이 없으면 **빈이 아예 없고**,
+    // 아래 whoami 테스트가 200 대신 404 로 실패한다. 프로파일이 아니라 속성이 라우트의 존재를 정한다.
+    "unigate.iam.probe.caller.enabled=true",
   ],
 )
 class IamSecurityBoundaryTest {
