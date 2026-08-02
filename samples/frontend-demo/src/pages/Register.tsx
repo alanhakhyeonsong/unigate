@@ -3,6 +3,7 @@ import { publicApi } from '../api/iam'
 import { ApiError } from '../api/problem'
 import type { Registration } from '../api/types'
 import { ProblemAlert } from '../components/ProblemAlert'
+import { ProofBanner } from '../components/ProofBanner'
 
 /**
  * 가입 — **이 콘솔에서 유일하게 로그인 없이 쓰는 화면.**
@@ -48,6 +49,33 @@ export function Register() {
   return (
     <section>
       <h2>가입 — 로그인 없이 부르는 유일한 API</h2>
+
+      <ProofBanner
+        claim={
+          <>
+            공개 쓰기 엔드포인트가 하나 있고, 그 방어선은 인증이 아니라{' '}
+            <strong>전용 rate limit</strong> 이다.
+          </>
+        }
+        how={[
+          '로그아웃한 상태에서 이 화면을 연다 (다른 화면은 로그인으로 튕긴다)',
+          '폼을 채워 가입한다',
+          '응답의 onboardingState 와 userRef 를 확인한다',
+          '연속으로 여러 번 눌러 본다',
+        ]}
+        expect={
+          <>
+            201 이 오지만 <code>onboardingState</code> 는 <code>PENDING_IDENTITY</code>,{' '}
+            <code>userRef</code> 는 <strong>null</strong> 이어야 한다 — Keycloak 반영은 outbox
+            워커가 나중에 한다. 연타하면 <strong>429</strong> 가 나야 한다.
+          </>
+        }
+        refs={[
+          'iam/.../iamIn/RegisterController.kt',
+          'gateway/.../config/RateLimitConfig.kt',
+        ]}
+      />
+
       <p className="note">
         <code>POST /iam/register</code> 는 <strong>공개 경로</strong>다. 사용자 토큰이 아직 없는
         유일한 IAM 유스케이스라 인증을 요구할 수 없고, 같은 이유로 <strong>CSRF 도 예외</strong>다.

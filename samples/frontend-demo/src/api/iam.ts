@@ -27,6 +27,21 @@ export const publicApi = {
 
 export const iam = {
   whoami: () => request<WhoAmI>('/iam/debug/whoami'),
+
+  /**
+   * 같은 프로브를 **로그인 이동 없이** 부른다 — 개요 화면 전용.
+   *
+   * 개요는 미인증 상태에서 읽어야 하는 화면이라, 401 을 이동 트리거가 아니라 **표시할 사실**로
+   * 다뤄야 한다. 근거와 함정은 `RequestOptions.suppressLoginRedirect` KDoc 참조.
+   *
+   * ## 응답 코드가 곧 세션 상태다
+   * | 상태 | 의미 |
+   * |---|---|
+   * | 200 | 인증됨. 토큰 상세까지 볼 수 있다 |
+   * | 404 | **인증됨.** 이 환경에 프로브가 없을 뿐이다(`CallerProbeController` 는 `@Profile("local")`) — 미인증이면 게이트웨이가 라우팅 전에 401 을 냈을 것이다 |
+   * | 401 | 미인증 |
+   */
+  whoamiQuiet: () => request<WhoAmI>('/iam/debug/whoami', { suppressLoginRedirect: true }),
   profile: () => request<Profile>('/iam/profile'),
   updateProfile: (body: { displayName?: string; locale?: string }) =>
     request<Profile>('/iam/profile', { method: 'PATCH', body }),

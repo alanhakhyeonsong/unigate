@@ -8,6 +8,51 @@ export function useWhoami() {
   return useQuery({ queryKey: queryKeys.whoami, queryFn: iam.whoami })
 }
 
+/** 개요 화면이 표시하는 세션 상태. **응답 코드에서 유도한 것**이고 추측이 아니다. */
+export type SessionState =
+  | 'loading'
+  /** 401 — 게이트웨이가 라우팅 전에 끊었다. */
+  | 'anonymous'
+  /** 200 — 인증됐고 토큰 상세까지 있다. */
+  | 'authenticated'
+  /** 404 — 인증은 됐다. 이 환경에 프로브가 없을 뿐이다(alpha). */
+  | 'authenticated-no-probe'
+  /** 그 밖(5xx·네트워크). 상태를 말할 수 없다 — 모른다고 말해야 한다. */
+  | 'unknown'
+
+/**
+ * 세션 상태 프로브 — **미인증에서도 안전하게 부를 수 있는 유일한 조회.**
+ *
+ * 다른 조회는 401 을 만나면 로그인으로 튕기지만 이건 튕기지 않는다(`iam.whoamiQuiet`).
+ * 그래서 개요 화면이 로그인 전에도 열린다.
+ */
+export function useSessionProbe() {
+  const query = useQuery({
+    queryKey: queryKeys.sessionProbe,
+    queryFn: iam.whoamiQuiet,
+    retry: false,
+  })
+
+  const error = query.error
+  const state: SessionState = query.isPending
+    ? 'loading'
+    : query.data
+      ? 'authenticated'
+      : error instanceof ApiError && error.status === 404
+        ? 'authenticated-no-probe'
+        : error instanceof ApiError && error.status === 401
+          ? 'anonymous'
+          : 'unknown'
+
+  // 401 본문이 알려준 로그인 주소. 하드코딩하지 않는 이유는 `api/client.ts` 와 같다.
+  const loginUrl =
+    error instanceof ApiError && typeof error.problem.loginUrl === 'string'
+      ? error.problem.loginUrl
+      : undefined
+
+  return { ...query, state, loginUrl }
+}
+
 /**
  * 프로필 — **반영 대기 중이면 폴링한다.**
  *

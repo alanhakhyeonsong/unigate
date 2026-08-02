@@ -3,6 +3,7 @@ import { orders } from '../api/orders'
 import { ApiError } from '../api/problem'
 import type { Echo } from '../api/types'
 import { ProblemAlert } from '../components/ProblemAlert'
+import { ProofBanner } from '../components/ProofBanner'
 
 /**
  * 위조 헤더 실험실 — 이 앱의 존재 이유에 가장 가까운 화면.
@@ -38,6 +39,38 @@ export function Diagnostics() {
   return (
     <section>
       <h2>진단 — 위조 헤더 실험실</h2>
+
+      <ProofBanner
+        claim={
+          <>
+            클라이언트가 보낸 신뢰 헤더는 <strong>덮어써지는 게 아니라 제거된다.</strong>{' '}
+            다운스트림에 도달한 값은 반드시 게이트가 검증한 것이다.
+          </>
+        }
+        how={[
+          'X-Requested-Tenant 에 소속 테넌트를 넣는다',
+          'X-Tenant-Id 에 남의 테넌트를 위조해 넣는다',
+          '위조 Authorization 헤더도 함께 체크한다',
+          '/api/echo 를 호출해 다운스트림이 실제로 받은 값을 본다',
+        ]}
+        expect={
+          <>
+            <code>X-Tenant-Id</code> 는 <strong>위조값이 아니라</strong> 게이트가 검증한 값이어야
+            하고, <code>Authorization</code> 은 위조 문자열이 아니라 <strong>세션에서 재주입된
+            JWT</strong> 여야 한다. 비소속 테넌트를 주장하면 다운스트림에 닿기 전에 403 이다.
+          </>
+        }
+        refs={[
+          'gateway/.../gatewayIn/TenantGateFilter.kt',
+          'samples/downstream-demo/.../EchoController.kt',
+        ]}
+      />
+
+      <p className="note">
+        이 화면은 <strong>인스펙터가 볼 수 없는 것</strong>을 본다. 브라우저는 게이트웨이가 붙인
+        헤더를 관측할 수 없어서, 다운스트림이 되비춰 주는 이 경로가 유일한 확인 수단이다.
+      </p>
+
       <div className="row">
         <label>
           X-Requested-Tenant(주장)

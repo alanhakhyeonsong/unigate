@@ -1,11 +1,63 @@
 :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 body { margin: 0; }
-.app { max-width: 900px; margin: 0 auto; padding: 16px; }
-header { border-bottom: 1px solid #8883; padding-bottom: 8px; margin-bottom: 16px; }
-h1 { font-size: 20px; margin: 0 0 8px; }
-nav { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-nav form { margin: 0; }
-.tenant { margin-left: auto; font-size: 14px; }
+/*
+ * 구조용 CSS 만 둔다 — 이 콘솔은 검증 장치이고 디자인 산출물이 아니다.
+ * 색은 전부 `#888` 계열 알파값이라 light/dark 어느 쪽에서도 읽힌다(`color-scheme: light dark`).
+ * 인스펙터가 화면 하단에 고정되므로 body 아래쪽 여백을 그만큼 비워 둔다.
+ */
+.app { max-width: 1100px; margin: 0 auto; padding: 16px 16px 120px; }
+header { border-bottom: 1px solid #8883; padding-bottom: 8px; margin-bottom: 16px;
+         display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+h1 { font-size: 20px; margin: 0; }
+.header-right { margin-left: auto; display: flex; gap: 12px; align-items: center; }
+.header-right form { margin: 0; }
+.tenant { font-size: 14px; }
+
+/* 본문 2단. 좁은 화면에서는 사이드바가 위로 접힌다. */
+.layout { display: grid; grid-template-columns: 200px 1fr; gap: 24px; align-items: start; }
+@media (max-width: 720px) { .layout { grid-template-columns: 1fr; } }
+
+.sidenav { font-size: 14px; border-right: 1px solid #8883; padding-right: 12px; }
+@media (max-width: 720px) { .sidenav { border-right: none; border-bottom: 1px solid #8883; padding-bottom: 12px; } }
+.nav-group { margin-bottom: 16px; }
+.nav-group-title { font-weight: 600; font-size: 13px; }
+.nav-group-hint { font-size: 12px; color: #888; margin-bottom: 4px; }
+.sidenav ul { list-style: none; margin: 0; padding: 0; }
+.sidenav li { margin: 2px 0; }
+.sidenav a { text-decoration: none; display: block; padding: 2px 4px; }
+.sidenav a.active { background: #8882; font-weight: 600; }
+
+/* "이 화면이 증명하는 것" 배너 — 모든 화면 맨 위에 같은 모양으로 붙는다. */
+.proof { border: 1px solid #8884; border-left: 3px solid #888; padding: 8px 10px; margin: 8px 0 16px;
+         font-size: 13px; background: #8881; }
+.proof-tag { display: block; font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: .04em; }
+.proof-claim { margin-bottom: 6px; }
+.proof-body { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 720px) { .proof-body { grid-template-columns: 1fr; } }
+.proof-label { font-size: 11px; color: #888; }
+.proof-body ol { margin: 2px 0 0; padding-left: 18px; }
+.proof-body p { margin: 2px 0 0; }
+.proof-refs { margin-top: 6px; font-size: 12px; color: #888; }
+
+.steps { padding-left: 18px; font-size: 14px; }
+.steps li { margin-bottom: 10px; }
+.steps small { color: #888; display: block; }
+.gotchas { font-size: 14px; }
+.gotchas li { margin-bottom: 6px; }
+
+/* 요청 인스펙터 — 화면 하단 고정. 어느 화면에 있든 마지막 요청이 보인다. */
+.inspector { position: fixed; left: 0; right: 0; bottom: 0; background: Canvas;
+             border-top: 1px solid #8886; font-size: 13px; max-height: 60vh; overflow-y: auto; z-index: 10; }
+.inspector-toggle { width: 100%; text-align: left; border: none; background: #8881; padding: 6px 12px; }
+.inspector-body { padding: 8px 12px; }
+.inspector-split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
+@media (max-width: 900px) { .inspector-split { grid-template-columns: 1fr; } }
+.inspector tbody tr { cursor: pointer; }
+.inspector tbody tr.selected { background: #8882; }
+.inspector .ok { color: #2a7; }
+.inspector .bad { color: #c55; }
+.inspector-detail { border-left: 1px solid #8883; padding-left: 12px; }
+.inspector-detail .kv { grid-template-columns: 120px 1fr; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
 label { display: flex; gap: 4px; align-items: center; font-size: 14px; }
 input { padding: 4px 6px; }
