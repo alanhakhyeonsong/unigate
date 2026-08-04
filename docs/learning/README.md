@@ -52,6 +52,8 @@
 | [40](40-fail-closed-cost-reproduced.md) | fail-closed 의 대가를 문장에서 관찰로 | 8g | 학습중 | 정상 경로에서 fail-open 과 **결과가 같아서**, 고장내지 않으면 정책이 뒤집혀도 모른다. 워커까지 멈춘다 |
 | [41](41-what-breaks-first.md) | 무엇이 먼저 무너지는가 — 포화의 위치를 찾는 법 | 6+ | 학습중 | 상한을 정한 건 게이트웨이가 아니라 IAM(replica 1)이었고, 그걸 풀자 다음은 **공유 DB 커넥션**이었다. 제약이 풀리면 다음 제약을 다시 찾아야 한다 |
 | [42](42-silently-overridden-config.md) | 설정은 맞는데 조용히 무력화된다 | 9 | 학습중 | 값을 올바르게 넣었는데 **다른 것이 그 값을 이긴다**. 설정을 두 번 확인해 맞으면, 그 값을 *읽는 코드*를 봐야 한다 |
+| [43](43-shared-audience-and-token-replay.md) | 공유 audience — 다운스트림이 둘이 되자 보인 것 | 9+ | 학습중 | `aud` 검증은 "나를 향했나" 만 본다. 한 토큰에 여러 audience 가 실리면 **A 가 받은 토큰이 B 의 열쇠**가 된다 — 수신 측에서는 못 고친다 |
+| [44](44-two-correct-checks-one-hole.md) | 두 검사가 각자 옳은데 합치면 구멍이다 | 9+ | 학습중 | 게이트도 제품도 자기 질문에 정답을 냈는데 교차 테넌트가 열렸다. **어느 질문도 "이 자원이 지금 스코프의 것인가" 를 묻지 않았다** |
 
 상태: `학습중` → `이해함` → (필요 시) `재방문 필요`
 
@@ -171,6 +173,11 @@
 
 ### 샘플 앱 구성 시
 
+- [x] **공유 audience 의 대가** — 소비자 2대부터만 보인다. 재생(replay) 실측 → [43](43-shared-audience-and-token-replay.md)
+- [x] **층 사이의 구멍** — 각 층이 옳아도 조합이 틀릴 수 있다 → [44](44-two-correct-checks-one-hole.md)
+- [ ] **이 부류를 자동으로 잡는 법** — 리뷰로 안 잡히면 남는 건 테스트인데, **양쪽 테넌트 소속 사용자**
+      픽스처가 없으면 우연히 통과한다. 적합성 테스트 묶음의 형태를 아직 안 정했다
+      (`docs/plans/backlog/downstream-abac-reinforcement.md` §7)
 - [x] **BFF + SPA 함정** — XHR 리다이렉트 · 세션 쿠키 · CORS credentials → [26](26-bff-spa-integration.md)
 - [x] **cross-origin 배치의 대가** — CORS·`loginUrl` 절대경로화. 로컬 same-origin 에서는 **절대 드러나지 않는다** → [26](26-bff-spa-integration.md) §5
 - [x] **TanStack Query 캐시와 테넌트 격리** — 서버가 격리해도 캐시 키가 무너뜨리면 요청조차 안 나간다 → [26](26-bff-spa-integration.md) §5

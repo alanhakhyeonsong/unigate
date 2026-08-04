@@ -9,7 +9,12 @@
 | 앱 | 스택 | 포트 | 역할 |
 |---|---|---|---|
 | `downstream-demo` | Kotlin · Spring MVC · Resource Server | 8081 | 제품 다운스트림 흉내. 받은 헤더를 되비추고 테넌트 격리를 강제한다 |
+| `downstream-billing` | Kotlin · Spring MVC · Resource Server | 8082 | **2대째** 다운스트림. 소비자가 하나일 때는 **구조적으로 안 보이는 것**을 드러낸다(§6) |
 | `frontend-demo` | React 18 · TS · TanStack Query · Vite | 5173 | BFF 를 쓰는 SPA. 로그인·CSRF·테넌트·비동기 반영을 화면으로 드러낸다 |
+
+> **왜 다운스트림이 둘인가:** 공유 `aud` 재생 · claim 누출 · 교차 테넌트 판정 · 회로 격리는
+> **소비자가 2대여야 값이 눈에 보이는 형태로 나타난다.** 1대일 때의 "정상" 은 검증이 아니다.
+> 상세는 §6 과 `docs/learning/43` · `44`.
 
 ## 1. 실행
 
@@ -19,9 +24,13 @@ source ./keycloak.secret.env          # Keycloak 좌표 — 기본값이 없다(
 
 ./gradlew :gateway:bootRun            # 8080
 ./gradlew :iam:bootRun                # 8090
-(cd samples/downstream-demo && ./gradlew bootRun)   # 8081
+(cd samples/downstream-demo && ./gradlew bootRun)      # 8081
+(cd samples/downstream-billing && ./gradlew bootRun)   # 8082
 (cd samples/frontend-demo && npm install && npm run dev)  # 5173
 ```
+
+> §6 의 시나리오를 재현하려면 **두 다운스트림을 동시에** 띄워야 한다. 하나만 띄우면
+> 재생·격리 시나리오가 성립하지 않고, `/api/billing/**` 는 회로가 열려 503 이 된다.
 
 브라우저는 **5173** 으로 연다. Vite dev proxy 가 게이트웨이를 같은 origin 으로 보이게 한다 —
 그래야 세션 쿠키·CSRF 쿠키가 그냥 동작한다.
@@ -48,7 +57,14 @@ source ./keycloak.secret.env          # Keycloak 좌표 — 기본값이 없다(
 | `downstream-demo` `/echo` | 인가 규칙의 **예외**라 테넌트 검증을 받지 않는다 | 게이트웨이를 우회하면 위조 `X-Tenant-Id` 가 그대로 도달한다(P9g 실측) |
 | `downstream-demo` `/invoices` | 테넌트에 관한 코드가 **한 줄도 없다** | 그런데도 막힌다 — `anyRequest` 인가 규칙이 문 앞에서 거른다(잊어도 닫히는 기본값) |
 | `downstream-demo` `/public/ping` | 인증 없이 200 | 브라우저에서 다운스트림 origin 을 얻기 위한 **검증 도구**. 자원이 아니다 |
+| **`downstream-billing` `/subscriptions/{id}`** | 테넌트 판정을 **토큰의 소속 목록**으로 한다 | **게이트도 제품도 각자 옳은데 합치면 교차 테넌트가 열린다**(§6). 대조군은 바로 아래 줄 |
+| `downstream-billing` `ResourceServerConfig` | `anyRequest` 가 `authenticated` 까지만 — 문 앞에서 테넌트를 **안 본다** | demo 의 "잊으면 닫히는 기본값" 과 **정반대**로 둔 것. 문 앞을 닫으면 위 구멍이 재현 자체가 안 된다 |
 | `frontend-demo` 진단 화면 | 위조 헤더를 **일부러** 실어 보낸다 | 게이트웨이가 무엇을 지우고 무엇을 넣는지 눈으로 본다 |
+
+> ⚠️ **`downstream-billing` 의 안전한 쪽도 있다.** `/scoped/subscriptions/{id}` 는 같은 자원을
+> **검증된 스코프 헤더**로 판정한다(규약대로). 취약/안전을 한 앱에 나란히 둔 이유는
+> **같은 요청이 판정 근거만으로 200 과 403 을 오가는 것**을 보이기 위해서다.
+> 복사할 것은 `scoped` 쪽이고, 더 나은 배치는 `downstream-demo` 형태다.
 
 ## 4. alpha 배포
 
@@ -90,4 +106,25 @@ curl -s localhost:18080/config.js
 - `docs/learning/23` — 게이트웨이의 coarse 인가와 "제거 후 재주입"
 - `docs/learning/24` — 잊으면 닫히는 기본값(다운스트림 테넌트 격리)
 - `docs/learning/25` — outbox 보상(이메일 변경)
+- `docs/learning/43` — 공유 audience 와 토큰 재생
+- `docs/learning/44` — 두 검사가 각자 옳은데 합치면 구멍이다
 - `CLAUDE.md` §6.1 — BFF + SPA 조합의 함정
+
+## 6. 다운스트림 2대로만 재현되는 것 (재연 시나리오)
+
+**사전조건:** 한 사용자가 **테넌트 두 곳에 모두 속해야** 한다(예: `acme`·`globex`).
+한 곳에만 속하면 교차 테넌트 시나리오가 **우연히 막혀** 통과해 버린다 — 재현이 안 되는 게 아니라
+**틀린 안심**을 준다.
+
+| # | 무엇을 보는가 | 방법 | 관찰된 것 |
+|---|---|---|---|
+| S1 | **공유 `aud`** | `GET /api/billing/token` | `aud` 에 demo·billing·iam 이 **함께** 실린다 |
+| S1b | **토큰 재생** | `/api/echo` 가 되비춘 Bearer 를 billing(:8082)에 **직접** | **200.** 두 서비스의 aud 검증은 각자 정확했는데도 |
+| S2 | **claim 누출** | 같은 응답의 `tenantMemberships` | 요청 스코프는 하나인데 **소속 전부**가 실려 온다 |
+| S3 | **교차 테넌트 구멍** | `acme` 컨텍스트로 `globex` 자원(`sub-b-1`) 요청 | `/subscriptions/…` **200** ❌ / `/scoped/subscriptions/…` **403** ✅ |
+| S3b | 게이트는 정상인가 | `X-Requested-Tenant: nonmember` | **403** — 게이트 자체는 자기 몫을 한다 |
+| S4 | **회로 격리** | billing 프로세스를 죽이고 양쪽 호출 | billing `503 billing_unavailable` · demo **200 유지** |
+
+> S3 이 이 샘플의 존재 이유다. **같은 토큰·같은 헤더·같은 자원인데 판정 근거만 다르다.**
+> S4 는 CB 인스턴스를 서비스별로 나눈 이유(bulkhead)를 실측으로 보여준다 —
+> 공유했다면 청구 장애가 주문 API 까지 끊는다.

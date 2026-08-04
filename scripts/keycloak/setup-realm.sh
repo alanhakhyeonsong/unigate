@@ -28,6 +28,16 @@ readonly GATEWAY_CLIENT_ID="unigate-client"
 readonly DOWNSTREAM_CLIENT_ID="unigate-downstream-demo"
 readonly AUDIENCE_MAPPER_NAME="downstream-audience"
 
+# 2대째 다운스트림(samples/downstream-billing). audience 로만 쓰이며 로그인에 참여하지 않는다.
+#
+# ⚠️ 이 mapper 도 **GW client 의 dedicated scope** 에 붙는다 — 아래 downstream mapper 와 같은 자리다.
+# 그 결과 발급되는 모든 access token 의 `aud` 에 **두 값이 함께** 실린다. 이건 버그가 아니라
+# 현재 구조(§6.2 (a) 공유 aud)를 있는 그대로 재현한 것이고, 그래서 "A 가 받은 토큰을 B 에
+# 그대로 재생하면 통과한다" 가 실측된다. 서비스별로 좁히려면 여기가 아니라 토큰 발급 방식
+# 자체를 바꿔야 한다((b) token exchange / (c) GW re-mint) — docs/plans/examine 참조.
+readonly BILLING_CLIENT_ID="unigate-billing-demo"
+readonly BILLING_AUDIENCE_MAPPER_NAME="billing-audience"
+
 # IAM 서비스 전용 관리 client (Phase 8c).
 # 게이트웨이 로그인 client 와 **분리**한다 — 관리 자격증명이 유출돼도 로그인 흐름은 무사하고
 # 그 반대도 마찬가지다(blast radius 축소, IAM_PLATFORM_DECISION.md §14).
@@ -345,6 +355,23 @@ downstream_client_payload=$(jq -n \
      webOrigins: []
    }')
 
+billing_client_payload=$(jq -n \
+  --arg clientId "$BILLING_CLIENT_ID" \
+  '{
+     clientId: $clientId,
+     name: "unigate Billing Demo (audience only)",
+     description: "2대째 다운스트림 예시 앱. 로그인 흐름에 참여하지 않고 access token 의 aud 값으로만 사용된다.",
+     enabled: true,
+     protocol: "openid-connect",
+     publicClient: false,
+     standardFlowEnabled: false,
+     implicitFlowEnabled: false,
+     directAccessGrantsEnabled: false,
+     serviceAccountsEnabled: false,
+     redirectUris: [],
+     webOrigins: []
+   }')
+
 # IAM 서비스 관리 client — 로그인 흐름에 참여하지 않는다(standardFlow=false).
 # service account 로만 Keycloak Admin API 를 호출한다.
 iam_client_payload=$(jq -n \
@@ -376,6 +403,9 @@ GATEWAY_UUID=""
 IAM_UUID=""
 if step "client '$DOWNSTREAM_CLIENT_ID' upsert"; then
   upsert_client "$DOWNSTREAM_CLIENT_ID" "$downstream_client_payload" >/dev/null
+fi
+if step "client '$BILLING_CLIENT_ID' upsert"; then
+  upsert_client "$BILLING_CLIENT_ID" "$billing_client_payload" >/dev/null
 fi
 if step "client '$GATEWAY_CLIENT_ID' upsert (redirectUris=$REDIRECT_URIS)"; then
   GATEWAY_UUID=$(upsert_client "$GATEWAY_CLIENT_ID" "$gateway_client_payload")
@@ -501,6 +531,16 @@ upsert_group_membership_mapper() {
 
 if step "audience mapper '$AUDIENCE_MAPPER_NAME' upsert (aud += $DOWNSTREAM_CLIENT_ID)"; then
   upsert_audience_mapper "$AUDIENCE_MAPPER_NAME" "$DOWNSTREAM_CLIENT_ID"
+fi
+
+# 2대째 다운스트림용. 이게 없으면 GW→billing 라우트가 전부 401 이고, 응답만 봐서는 원인이
+# 보이지 않는다(토큰을 디코드해 aud 를 눈으로 봐야 안다 — IAM mapper 와 같은 함정).
+#
+# ⚠️ 이 줄을 추가한 순간부터 **한 토큰의 aud 가 3개**가 된다
+#    (unigate-downstream-demo · unigate-billing-demo · unigate-iam).
+#    이것이 공유 aud 의 실체이며, `GET /api/billing/token` 응답에서 눈으로 확인된다.
+if step "audience mapper '$BILLING_AUDIENCE_MAPPER_NAME' upsert (aud += $BILLING_CLIENT_ID)"; then
+  upsert_audience_mapper "$BILLING_AUDIENCE_MAPPER_NAME" "$BILLING_CLIENT_ID"
 fi
 
 # Phase 8f — IAM Resource Server 용. 이게 없으면 GW→IAM 인증 라우트가 **전부 401** 이고,
