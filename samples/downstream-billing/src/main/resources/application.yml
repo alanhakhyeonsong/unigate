@@ -22,6 +22,22 @@ unigate:
     # → 그 상태가 곧 "공유 aud" 이고, A 가 받은 토큰을 B 에 재생할 수 있다는 뜻이다.
     expected-audience: ${BILLING_EXPECTED_AUDIENCE:unigate-billing-demo}
 
+    # 픽스처 자원이 속할 두 테넌트. **realm 에 실재하는 값이어야 한다.**
+    #
+    # ⚠️ 없는 테넌트를 쓰면 아무도 거기 속하지 않으므로 **취약 엔드포인트마저 403** 이 되고,
+    #    시나리오가 통과한 것처럼 보인다 — 구멍이 막혀서가 아니라 재현 조건이 성립하지 않아서다.
+    #    응답만 봐서는 구분되지 않는다(SubscriptionRepository KDoc 참조).
+    #
+    # 기본값은 **로컬 realm(test)** 기준이다. alpha realm 은 테넌트 이름이 달라 주입이 필요하다.
+    #
+    # ⚠️ 들여쓰기를 `billing` 아래로 맞춘다. 한 단계 덜 들여쓰면 `unigate.fixture` 가 되어
+    #    `${unigate.billing.fixture.tenant-a}` 가 해석되지 않고 **기동이 실패한다**
+    #    (PlaceholderResolutionException). YAML 은 오타가 아니라 **다른 키**를 만들 뿐이라
+    #    경고가 없다 — 실제로 이걸로 한 번 죽었다.
+    fixture:
+      tenant-a: ${BILLING_FIXTURE_TENANT_A:acme}
+      tenant-b: ${BILLING_FIXTURE_TENANT_B:globex}
+
 server:
   # 8081(demo) 과 겹치지 않게. 두 다운스트림을 **동시에** 띄워야 비교가 성립한다.
   port: 8082

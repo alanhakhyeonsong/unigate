@@ -1,5 +1,6 @@
 package me.ramos.billing
 
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Repository
 
 /**
@@ -18,18 +19,38 @@ data class Subscription(
 /**
  * 인메모리 픽스처. **두 테넌트의 자원이 섞여 있어야** 교차 테넌트 판정을 재현할 수 있다.
  *
- * `TenantId` 규칙(`iam/.../TenantId.kt` — 소문자·숫자·하이픈)에 맞는 값을 쓴다. 실제 realm 에
- * 만들어 둔 테넌트 그룹 이름과 맞춰야 하며, 다르면 시나리오가 전부 403 으로만 끝나 무엇이 막혔는지
- * 구분되지 않는다(`docs/ALPHA_CONSOLE_SCENARIOS.md` 의 사전조건과 같은 성격).
+ * ## ⚠️ 테넌트 ID 는 **realm 에 실재하는 값**이어야 한다 (겪은 함정)
+ * 픽스처의 테넌트가 realm 에 없으면 **아무도 그 테넌트에 속하지 않으므로**, 취약 엔드포인트
+ * (`SubscriptionController`)마저 `subscription.tenantId !in memberships` 에서 403 을 낸다.
+ *
+ * 그러면 **시나리오가 통과한 것처럼 보인다.** 구멍이 막혀서가 아니라 **재현 조건이 성립하지
+ * 않아서**인데, 응답만 보면 구분되지 않는다 — 검증이 거짓 안심을 준다.
+ *
+ * 실제로 **환경마다 테넌트 이름이 달랐다** — 로컬 realm 과 alpha realm 이 서로 다른 값을 쓴다.
+ * 그래서 하드코딩하지 않고 주입받는다. 기본값은 로컬 realm 기준이고, 다른 환경에서는
+ * `BILLING_FIXTURE_TENANT_A` · `_B` 로 그 realm 에 실재하는 값을 넣는다.
+ *
+ * ## 재현에 필요한 조건 (둘 다 필요)
+ * 1. 두 테넌트가 realm 에 **실재**한다
+ * 2. 시나리오를 도는 사용자가 **양쪽 모두에 소속**돼 있다 — 한쪽만이면 우연히 막혀 위와 같은
+ *    거짓 통과가 된다
  */
 @Repository
-class SubscriptionRepository {
-    private val store =
+class SubscriptionRepository(
+    @param:Value("\${unigate.billing.fixture.tenant-a}") private val tenantA: String,
+    @param:Value("\${unigate.billing.fixture.tenant-b}") private val tenantB: String,
+) {
+    /**
+     * id 접두사(`sub-a-` / `sub-b-`)는 **테넌트 이름과 무관하게 고정**한다.
+     * 시나리오 문서와 재연 스크립트가 이 id 를 그대로 쓰므로, 환경마다 id 가 달라지면
+     * 같은 문서로 두 환경을 검증할 수 없다. 바뀌는 것은 `tenantId` 뿐이다.
+     */
+    private val store: Map<String, Subscription> =
         listOf(
-            Subscription(id = "sub-a-1", tenantId = "acme", plan = "standard", monthlyFeeKrw = 99_000),
-            Subscription(id = "sub-a-2", tenantId = "acme", plan = "enterprise", monthlyFeeKrw = 990_000),
-            Subscription(id = "sub-b-1", tenantId = "globex", plan = "standard", monthlyFeeKrw = 99_000),
-            Subscription(id = "sub-b-2", tenantId = "globex", plan = "trial", monthlyFeeKrw = 0),
+            Subscription(id = "sub-a-1", tenantId = tenantA, plan = "standard", monthlyFeeKrw = 99_000),
+            Subscription(id = "sub-a-2", tenantId = tenantA, plan = "enterprise", monthlyFeeKrw = 990_000),
+            Subscription(id = "sub-b-1", tenantId = tenantB, plan = "standard", monthlyFeeKrw = 99_000),
+            Subscription(id = "sub-b-2", tenantId = tenantB, plan = "trial", monthlyFeeKrw = 0),
         ).associateBy { it.id }
 
     /**
