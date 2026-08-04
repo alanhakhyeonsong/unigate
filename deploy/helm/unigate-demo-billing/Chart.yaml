@@ -1,0 +1,11 @@
+apiVersion: v2
+name: unigate-demo-billing
+description: 2대째 샘플 다운스트림 (Resource Server) — 소비자가 둘일 때만 드러나는 것의 검증용
+type: application
+version: 0.1.0
+appVersion: "0.0.1"
+
+dependencies:
+  - name: unigate-common
+    version: 0.1.0
+    repository: "file://../unigate-common"

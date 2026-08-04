@@ -74,12 +74,22 @@ source ./keycloak.secret.env          # Keycloak 좌표 — 기본값이 없다(
 | 앱 | 차트 | 이미지 | ingress |
 |---|---|---|---|
 | `downstream-demo` | `deploy/helm/unigate-demo-be` | `docker/server.dockerfile` (`MODULE_NAME=samples/downstream-demo`) | ❌ GW 경유만 |
+| `downstream-billing` | `deploy/helm/unigate-demo-billing` | `docker/server.dockerfile` (`MODULE_NAME=samples/downstream-billing`) | ❌ GW 경유만 |
 | `frontend-demo` | `deploy/helm/unigate-demo-fe` | `samples/frontend-demo/Dockerfile` (nginx) | ✅ 콘솔 host |
 
 ```bash
 deploy/deploy-alpha.sh demo-be
+deploy/deploy-alpha.sh demo-billing
 deploy/deploy-alpha.sh demo-fe
 ```
+
+> ⚠️ **billing 을 alpha 에 올리기 전에 realm 을 먼저 갱신한다** —
+> `scripts/keycloak/setup-realm.sh --env alpha`. `unigate-billing-demo` client 와 audience
+> mapper 가 없으면 `/api/billing/**` 이 **전부 401** 이고, 응답만 봐서는 원인이 안 보인다
+> (토큰을 디코드해 `aud` 를 눈으로 봐야 안다).
+>
+> ⚠️ **배포 순서는 GW 보다 먼저.** GW 의 `DOWNSTREAM_BILLING_URI` 가 이 Service 를 가리킨다.
+> 뒤집어도 GW 는 뜨지만 해당 라우트가 CB open 으로 503 이 된다.
 
 ### FE 는 게이트웨이 주소를 **런타임에** 받는다
 

@@ -111,6 +111,7 @@ env:
   # 짧은 이름은 어느 네임스페이스에 배포하든 그대로 동작한다.
   IAM_URI: "http://unigate-iam-svc"
   DOWNSTREAM_DEMO_URI: "http://unigate-demo-be-svc"
+  DOWNSTREAM_BILLING_URI: "http://unigate-demo-billing-svc"
   # 나머지(KEYCLOAK_ISSUER_URI · DB · Valkey · CORS origin · UNIGATE_FRONTEND_BASE_URI)는
   # 전부 차트 밖 Secret 으로 들어간다.
   #
