@@ -22,7 +22,7 @@
 #
 # 사용법:
 #   deploy/deploy-alpha.sh [옵션] <app>
-#     app: gateway | iam | demo-be | demo-fe | all
+#     app: gateway | iam | demo-be | demo-billing | demo-fe | all
 #
 #   옵션:
 #     --dry-run       helm/kubectl 을 dry-run 으로만 실행(이미지 빌드·푸시는 건너뜀)
@@ -64,7 +64,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "${APP}" ]] || { echo "ERROR: 배포 대상을 지정하세요 — gateway | iam | demo-be | demo-fe | all" >&2; exit 2; }
+[[ -n "${APP}" ]] || { echo "ERROR: 배포 대상을 지정하세요 — gateway | iam | demo-be | demo-billing | demo-fe | all" >&2; exit 2; }
 
 ENV_DIR="deploy/env"
 HELM_DIR="deploy/helm"
@@ -123,8 +123,9 @@ app_meta() {
     gateway) echo "unigate-gateway|gateway|docker/server.dockerfile|.|true|UNIGATE_GATEWAY_HOST" ;;
     iam)     echo "unigate-iam|iam|docker/server.dockerfile|.|true|" ;;
     demo-be) echo "unigate-demo-be|samples/downstream-demo|docker/server.dockerfile|.|true|" ;;
+    demo-billing) echo "unigate-demo-billing|samples/downstream-billing|docker/server.dockerfile|.|true|" ;;
     demo-fe) echo "unigate-demo-fe|-|samples/frontend-demo/Dockerfile|samples/frontend-demo|false|UNIGATE_CONSOLE_HOST" ;;
-    *)       die "알 수 없는 앱: $1 (gateway | iam | demo-be | demo-fe | all)" ;;
+    *)       die "알 수 없는 앱: $1 (gateway | iam | demo-be | demo-billing | demo-fe | all)" ;;
   esac
 }
 
@@ -134,11 +135,15 @@ build_image() {
   case "${module}" in
     "-")
       log "[${app}] jar 빌드 없음 — FE 는 이미지 안에서(multi-stage) 빌드된다" ;;
-    "samples/downstream-demo")
+    samples/*)
       # 샘플은 settings.gradle.kts 에 include 되지 않은 **독립 빌드**다.
       # 루트 ./gradlew 로는 이 모듈을 알 수 없다.
-      log "[${app}] bootJar (독립 Gradle 빌드)"
-      (cd samples/downstream-demo && ./gradlew bootJar --quiet) ;;
+      #
+      # 샘플이 둘이 되면서 경로 리터럴 분기를 glob 으로 바꿨다. 하드코딩을 유지하면
+      # 샘플을 추가할 때마다 이 case 를 잊고, 그러면 **직전 빌드의 jar 이 그대로 이미지에
+      # 들어간다** — 빌드도 배포도 성공하고 코드만 옛것이라 증상이 가장 늦게 드러난다.
+      log "[${app}] bootJar (독립 Gradle 빌드: ${module})"
+      (cd "${module}" && ./gradlew bootJar --quiet) ;;
     *)
       log "[${app}] bootJar :${module}"
       ./gradlew ":${module}:bootJar" --quiet ;;
@@ -282,11 +287,11 @@ deploy_app() {
   fi
 }
 
-# 배포 순서: IAM · demo-be 를 먼저 올린다. GW 가 두 Service 를 URI 로 참조하기 때문이다.
+# 배포 순서: IAM · demo-be · demo-billing 을 먼저 올린다. GW 가 세 Service 를 URI 로 참조한다.
 # 순서를 뒤집어도 GW 는 뜨지만 해당 라우트가 CB open 으로 503 을 낸다.
 # demo-fe 는 게이트웨이 주소를 주입받으므로 마지막이다.
 if [[ "${APP}" == "all" ]]; then
-  for a in iam demo-be gateway demo-fe; do deploy_app "$a"; done
+  for a in iam demo-be demo-billing gateway demo-fe; do deploy_app "$a"; done
 else
   deploy_app "${APP}"
 fi

@@ -53,11 +53,10 @@ unigate:
     # **2대째** 다운스트림(samples/downstream-billing). 제품이 여럿일 때만 드러나는 것들을
     # 재현하기 위한 것이다 — 공유 aud 재생 · claim 누출 · 교차 테넌트 판정 · CB 격리.
     #
-    # ⚠️ **로컬 검증 전용이다.** alpha 프로파일에는 주입값이 없어 이 기본값이 그대로 쓰이고,
-    # 그러면 `/api/billing/**` 라우트는 살아 있는데 대상이 없어 회로가 열린다(503).
-    # "라우트는 열렸는데 제품이 없다" 는 상태 자체가 `paas-iam-scope-review.md` §10.1 이 말한
-    # ①배포 축의 드리프트이므로, 없애는 대신 **여기 적어 둔다.** alpha 로 올릴 때는
-    # DOWNSTREAM_BILLING_URI 주입과 라우트 활성화를 함께 결정한다.
+    # 이 기본값은 **로컬 전용**이다. alpha 는 `application-alpha.yml` 이 같은 키를 재선언해
+    # fallback 없이 `${DOWNSTREAM_BILLING_URI}` 를 요구하므로, 주입을 빠뜨리면 기동이 실패한다.
+    # (로컬 기본값이 alpha 에 새면 파드가 자기 자신을 찌르며 503 을 내고, 그 증상은
+    #  "billing 이 안 떴다" 와 구별되지 않는다.)
     billing-uri: ${DOWNSTREAM_BILLING_URI:http://localhost:8082}
   iam:
     # Phase 8f — IAM 서비스(별도 모듈, Servlet MVC + JPA + VT). 로컬 기본 포트는 8090.

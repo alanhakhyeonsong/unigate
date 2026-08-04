@@ -1,0 +1,157 @@
+# unigate-demo-billing 기본값 (환경 공통).
+#
+# `unigate-demo-be` 와 **의도적으로 거의 같다.** 다른 곳은 셋뿐이다 —
+# `service.targetPort`(8082) · `podLabels` · `env.BILLING_EXPECTED_AUDIENCE`.
+# 두 번째 소비자를 실제로 만들어 봐야 무엇이 진짜 공통인지 갈리므로, 지금은 복제해 두고
+# 공통화 여부는 소비자가 더 늘 때 판단한다(`downstream-starter` 를 미룬 것과 같은 판단).
+#
+# ⚠️ **샘플이고, 일부러 취약한 엔드포인트가 있다.** `samples/README.md` §3 참조 —
+#    `/subscriptions/{id}` 는 테넌트 판정을 토큰의 소속 목록으로 한다(교차 테넌트가 열린다).
+#    안전한 대조군은 `/scoped/subscriptions/{id}` 다. **레퍼런스로 복사하지 않는다.**
+# ⚠️ ingress 를 갖지 않는다. GW 경유로만 도달해야 테넌트 게이트를 거친다.
+#    직접 노출하면 게이트 우회 경로가 인터넷에 열리고, 이 앱은 문 앞에서 테넌트를 보지 않아
+#    demo-be 보다 노출의 대가가 크다.
+
+global:
+  namespace: ""
+  image:
+    repository: ""
+    tag: ""
+    pullPolicy: IfNotPresent
+
+replicaCount: 1
+revisionHistoryLimit: 3
+
+terminationGracePeriodSeconds: 45
+lifecycle:
+  preStop:
+    exec:
+      command: ["sh", "-c", "sleep 5"]
+
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automount: null
+
+podAnnotations: {}
+podLabels:
+  app: unigate-demo-billing
+
+podSecurityContext:
+  fsGroup: 1001
+  fsGroupChangePolicy: OnRootMismatch
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  privileged: false
+  readOnlyRootFilesystem: true
+  runAsGroup: 1001
+  runAsNonRoot: true
+  runAsUser: 1001
+  seccompProfile:
+    type: RuntimeDefault
+
+service:
+  type: ClusterIP
+  port: 80
+  # ⚠️ demo-be(8081)와 다른 **8082** 다. 로컬에서 둘을 동시에 띄우기 위해 갈라 둔 값이
+  #    컨테이너 포트로 그대로 이어진다. 여기를 8081 로 두면 파드는 뜨는데 probe 가 전부
+  #    실패해 CrashLoopBackOff 처럼 보인다 — 원인이 포트라는 게 로그에 안 나온다.
+  targetPort: 8082
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi
+
+# ⚠️ 이 앱도 **부팅 시 Keycloak 을 조회한다**(demo-be 와 같다).
+#    `ResourceServerConfig.jwtDecoder()` 의 `JwtDecoders.fromIssuerLocation` 이
+#    discovery/JWKS 를 그 자리에서 1회 가져온다. Keycloak 이 안 떠 있으면 **기동 자체가 실패**한다.
+#    게이트웨이·IAM 은 지연 JWKS 라 이 특성이 없다.
+startupProbe:
+  httpGet:
+    path: /actuator/health/readiness
+    port: http
+  initialDelaySeconds: 20
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 30
+livenessProbe:
+  httpGet:
+    path: /actuator/health/liveness
+    port: http
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+readinessProbe:
+  httpGet:
+    path: /actuator/health/readiness
+    port: http
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# 샘플은 부하 대상이 아니다. 고정 replica 로 둔다(demo-be 와 같은 판단).
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 1
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: null
+  behavior: {}
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  maxUnavailable: null
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts: []
+  tls: []
+
+javaOpts: "-Xms256m -Xmx640m"
+
+otelAgent:
+  enabled: false
+
+tmpVolume:
+  enabled: true
+  mountPath: /app/tmp
+  sizeLimit: 512Mi
+  persistentVolumeClaim:
+    enabled: false
+
+# KEYCLOAK_ISSUER_URI 가 실제 호스트를 담으므로 Secret 으로 간다(비밀은 아니지만 좌표다).
+envFromSecret: true
+existingSecret: ""
+
+config:
+  enabled: false
+
+env:
+  # 이 샘플에도 alpha 프로필 파일이 없다 — 설정이 전부 환경변수라 프로필을 나눌 이유가 없었다.
+  # 그래도 entrypoint 가 프로필 지정을 강제하므로 값을 준다(docker-entrypoint.sh).
+  SPRING_PROFILES_ACTIVE: default
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+topologySpreadConstraints: []
