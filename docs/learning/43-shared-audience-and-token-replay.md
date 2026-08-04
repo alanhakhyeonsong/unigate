@@ -93,6 +93,30 @@ demo 가 본 토큰 앞 12자: Bearer eyJhbGciOiJS…(마스킹)
 **200 이다.** demo 가 침해되면(또는 demo 를 운영하는 쪽이 악의적이면) 그 토큰으로 billing 의
 자원에 그대로 접근할 수 있다. 두 서비스의 audience 검증은 **둘 다 정확히 동작했는데도** 그렇다.
 
+### 4.3 alpha 재확인 — 대조군을 넣으니 반박이 닫혔다
+
+alpha(분리 배포 · 다른 realm)에서 같은 것을 다시 확인했다. billing 은 ingress 가 없어
+`kubectl port-forward` 로 클러스터 안 Service 에 직접 붙었다 — 그 경로가 곧 "GW 우회" 다.
+`scripts/verify/two-downstream-scenarios.sh --env alpha` 실행 결과:
+
+```
+  relay 토큰: 앞 19자 Bearer eyJhbGciOiJS…(마스킹) · 길이 1656
+  그 토큰의 aud: ["unigate-downstream-demo", "unigate-iam", "unigate-billing-demo", "account"]
+  billing 직접 호출        -> HTTP 200
+  위조 Bearer (대조군)     -> HTTP 401
+```
+
+**로컬에서는 위의 200 만 봤다.** 그때는 *"애초에 검증을 안 해서 통과한 것 아닌가"* 라는 반박이
+열려 있었다. 위조 토큰이 **401** 이라는 것은 billing 의 서명·iss·aud 검증이 **실제로 돌고 있다**는
+뜻이고, 그럼에도 정상 relay 토큰이 200 이라는 것이 이 문서의 주장 그대로다.
+
+> **대조군 하나가 증거의 성격을 바꾼다.** 200 만 있으면 "검증이 없다" 와 "검증이 있는데 통과한다"
+> 가 구분되지 않는다. 이 프로젝트가 반복해서 배운 것 — *통과 사례만 보는 것은 아무것도 증명하지
+> 못한다*(`ALPHA_CONSOLE_SCENARIOS.md` 목적절) — 가 여기에도 그대로 적용된다.
+
+alpha 의 `aud` 순서는 로컬과 다르지만(배열이라 순서는 의미 없다) **구성은 같다.** 즉 이 성질은
+특정 환경의 설정 실수가 아니라 **mapper 를 client scope 에 붙이는 구조 자체**에서 나온다.
+
 ### 4.3 claim 누출도 같은 자리에서 보인다
 
 4.1 응답의 `tenantMemberships` 를 보면 `acme` 와 `globex` 가 **둘 다** 있다.

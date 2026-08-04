@@ -457,6 +457,7 @@ S18 만 보고 "알아서 되니 신경 쓸 것 없다" 로 정리하면 이 방
 | 목록이 안 바뀌고 **요청도 안 나감** | queryKey 에 테넌트 누락 | Network 탭이 비어 있다 |
 | 소속은 보이는데 **접근 403** | claim 전파 지연 | 최대 5분. `/iam/memberships` 는 DB, 게이트는 claim |
 | 로그인이 `Invalid parameter: redirect_uri` | realm 에 주소 미등록 | **게이트웨이 로그에는 아무것도 안 남는다**(거절 주체가 Keycloak) |
+| **일부러 취약한 경로가 403** (§6 S3) | ① 규약대로 막힌 것 ② **재현 조건 불충족** — 픽스처 테넌트가 realm 에 없거나 계정이 한쪽 테넌트에만 속함 | S2 의 `tenantMemberships` 를 **먼저** 본다. ②는 "통과"로 위장하므로 검증 실패보다 나쁘다 |
 
 ---
 
@@ -566,6 +567,8 @@ S18 만 보고 "알아서 되니 신경 쓸 것 없다" 로 정리하면 이 방
 - **브라우저 밖 경로는 이 콘솔로 확인할 수 없다.** 세션 쿠키가 브라우저 안에 있어 `curl` 로
   같은 요청을 만들 수 없다. 게이트 strip 처럼 "브라우저가 먼저 막는" 것들은 **단위 테스트가
   최종 근거**다.
+  → 다만 **세션 쿠키를 손으로 옮기면 그 벽을 한 번 넘을 수 있다.** §6 이 그 방법이고,
+  다운스트림 2대 시나리오는 그렇게 확인했다.
 - **공개 가입 엔드포인트가 ingress 에 열려 있다.** 인증이 없고 방어는 rate limit 뿐이다.
   검증용 realm 이라 수용하지만, 운영 성격의 realm 이라면 별도 판단이 필요하다.
 - **비밀번호는 이 콘솔로 다룰 수 없다.** 계정 생성까지는 화면에서 되지만(S0) 자격증명은
@@ -573,3 +576,95 @@ S18 만 보고 "알아서 되니 신경 쓸 것 없다" 로 정리하면 이 방
 - **수락을 관리자가 대신할 수 없다.** 관리 API 에 강제 수락이 없어서, 계정마다 로그인해야
   한다. 브라우저 세션이 하나라 계정을 바꿔가며 검증하는 것이 번거롭다 — 시크릿 창을 병행하면
   두 계정까지는 동시에 볼 수 있다.
+
+---
+
+## 6. 다운스트림이 둘일 때만 되는 시나리오 (콘솔 밖)
+
+> §2 는 전부 **화면**으로 하는 것이다. 이 절은 다르다 — 확인 대상이 **두 다운스트림 사이의
+> 관계**라 한 화면에 담기지 않는다. 그래서 스크립트로 돌린다.
+>
+> 실행: `scripts/verify/two-downstream-scenarios.sh` · 배경: `docs/learning/43` · `44`
+
+### 6.1 왜 화면이 아니라 스크립트인가
+
+여기서 보려는 것은 "이 요청이 되는가" 가 아니라 **"A 를 향한 토큰이 B 에서도 통하는가"** 다.
+그러려면 ① A 가 받은 토큰을 꺼내 ② **게이트웨이를 우회해** B 에 직접 붙여야 하는데,
+브라우저는 둘 다 못 한다 — 토큰은 BFF 세션 안에 있고(§0.3), billing 은 **ingress 가 없다.**
+
+`kubectl port-forward` 로 클러스터 안 Service 에 붙는 것이 그 우회 경로다.
+
+### 6.2 준비 — 이 둘이 안 맞으면 결과가 거짓말을 한다
+
+| 조건 | 왜 |
+|---|---|
+| 픽스처 테넌트 두 개가 **realm 에 실재** | 없으면 아무도 안 속해서 취약 경로마저 403 |
+| 시나리오 계정이 **양쪽 테넌트에 모두 소속** | 한쪽만이면 역시 403 — 같은 거짓 통과 |
+
+둘 중 하나라도 어긋나면 **§6.4 의 S3 이 "막혔다"로 보인다.** 구멍이 닫혀서가 아니라
+재현 조건이 성립하지 않아서인데, **응답만 봐서는 구분되지 않는다**(§3 표 마지막 줄).
+
+realm 쪽 값은 `deploy/env/alpha.demo-billing.secret.env` 의
+`BILLING_FIXTURE_TENANT_A` · `_B` 와 같아야 한다.
+
+```bash
+# 1) 콘솔에 로그인 (두 테넌트에 모두 속한 계정)
+# 2) DevTools → Application → Cookies → SESSION 값 복사
+SESSION=<값> scripts/verify/two-downstream-scenarios.sh \
+  --env alpha --tenant-a <테넌트1> --tenant-b <테넌트2>
+```
+
+> ⚠️ `SESSION` 은 **그 계정을 사칭할 수 있는 값**이다. 터미널 히스토리·채팅에 남기지 않고,
+> 검증이 끝나면 콘솔에서 **로그아웃해 무효화**한다.
+
+### 6.3 S1 · S2 — 한 토큰이 무엇을 담고 있는가
+
+| 조작 | 기대 |
+|---|---|
+| `GET /api/billing/token` | `aud` 에 **두 다운스트림 audience 가 함께** 실린다 |
+| 같은 응답의 `tenantMemberships` | 요청한 스코프(`requestedTenant`)보다 **넓다** |
+
+실측(2026-08-04, alpha):
+
+```json
+{"audience":["unigate-downstream-demo","unigate-iam","unigate-billing-demo","account"],
+ "tenantMemberships":["demo","demo2"],
+ "requestedTenant":"demo"}
+```
+
+**이게 왜 증거인가:** 다운스트림이 하나였을 땐 `aud` 배열의 길이가 1 이라 아무 문제로도 보이지
+않았다. 2대째가 붙어야 **"이 토큰은 나만을 향한 것이 아니다"** 가 값으로 드러난다.
+그리고 청구 서비스가 알 이유 없는 소속(`demo2`)까지 보고 있다.
+
+### 6.4 S1b · S3 — 재생과 교차 테넌트
+
+| 조작 | 기대 | 실측 |
+|---|---|---|
+| relay 토큰을 billing 에 **직접**(GW 우회) | 200 | **200** |
+| **위조** Bearer 로 같은 호출 | 401 | **401** |
+| `/api/billing/subscriptions/sub-b-1` (타 테넌트 자원) | **200** ❌ 구멍 | 200 `verdictBy: token-memberships` |
+| `/api/billing/scoped/subscriptions/sub-b-1` | 403 ✅ | 403 |
+| `/api/billing/scoped/subscriptions/sub-a-1` (내 테넌트) | 200 | 200 `verdictBy: verified-scope-header` |
+| `X-Requested-Tenant: nonmember` | 403 | 403 |
+
+**S1b 는 대조군이 있어야 성립한다.** 재생이 200 이라는 것만으로는 *"billing 이 검증을 안 해서"*
+와 구분되지 않는다. 위조 토큰이 **401** 이라는 짝이 있어야 *"검증은 정상인데 통과한다"* 가 된다.
+이 문서 목적절의 원칙 — **통과 사례만 보는 것은 아무것도 증명하지 못한다** — 그대로다.
+
+**S3 는 판정 근거만 다른 두 엔드포인트를 나란히 부른다.** 같은 토큰·같은 헤더·같은 자원인데
+`token-memberships` 로 판정하면 200, `verified-scope-header` 로 판정하면 403 이다.
+그리고 마지막 줄이 중요하다 — **게이트 자체는 정상이다.** 구멍은 게이트의 결함이 아니라
+**게이트와 제품 판정 사이**에 있다(`docs/learning/44`).
+
+### 6.5 로컬에서도 같은 스크립트로
+
+```bash
+docker compose up -d
+./gradlew :gateway:bootRun                              # 8080
+(cd samples/downstream-demo   && ./gradlew bootRun)     # 8081
+(cd samples/downstream-billing && ./gradlew bootRun)    # 8082
+scripts/verify/two-downstream-scenarios.sh --env local  # 로그인까지 스크립트가 한다
+```
+
+로컬 realm 은 테스트 계정이 있어 `SESSION` 을 손으로 옮길 필요가 없다.
+**결과 형태는 alpha 와 같아야 한다** — 다르면 환경 차이가 아니라 설정이 어긋난 것이다.

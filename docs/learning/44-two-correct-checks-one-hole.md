@@ -87,7 +87,45 @@ X-Requested-Tenant: nonmember -> HTTP 403 (게이트가 403)
 
 **게이트는 자기 몫을 정확히 했다.** 즉 "게이트를 고치면 된다" 가 아니다.
 
-### 4.2 왜 리뷰로 안 잡히나 — 강제 지점의 차이
+### 4.2 alpha 재확인 — 그리고 하마터면 "막혔다" 고 오독할 뻔했다
+
+alpha 에서 같은 시나리오를 돌렸다(`scripts/verify/two-downstream-scenarios.sh --env alpha`).
+
+```
+GET /api/billing/subscriptions/sub-b-1        (토큰 소속 목록) -> HTTP 200  {"id":"sub-b-1","tenantId":"demo2","verdictBy":"token-memberships"}
+GET /api/billing/scoped/subscriptions/sub-b-1 (검증된 스코프)  -> HTTP 403
+GET /api/billing/scoped/subscriptions/sub-a-1 (대조군)         -> HTTP 200  {"id":"sub-a-1","tenantId":"demo","verdictBy":"verified-scope-header"}
+X-Requested-Tenant: nonmember                                  -> HTTP 403
+```
+
+로컬과 **완전히 같은 형태**다. 다만 `tenantId` 가 `globex` 가 아니라 `demo2` 인데, 이게 이 절의 요점이다.
+
+#### 재현 조건이 안 맞으면 "통과" 로 위장한다
+
+배포 전에 alpha realm 을 조회해 보니 **테넌트 이름이 로컬과 달랐다.** 픽스처를 하드코딩한 채로
+올렸다면 자원의 테넌트(`globex`)가 realm 에 없고, 그러면 **아무도 거기 속하지 않으므로**
+취약 엔드포인트의 `subscription.tenantId !in memberships` 가 참이 되어 **403** 이 난다.
+
+```
+기대했던 실패:  취약 200  ← 구멍이 재현됨
+실제로 났을 것:  취약 403  ← "막혔다"로 읽힌다
+```
+
+**두 403 은 응답만 봐서 구분되지 않는다.** 하나는 "규약이 지켜져 막힌 것" 이고 다른 하나는
+"재현 조건이 성립하지 않은 것" 인데, 후자는 **검증 실패보다 나쁘다 — 거짓 안심을 주기 때문이다.**
+
+그래서 픽스처 테넌트를 주입받게 바꾸고(`unigate.billing.fixture.tenant-a/b`), 스크립트의 판정
+기준에 이 함정을 명시했다. 재현에 필요한 조건은 **둘 다** 필요하다:
+
+1. 두 테넌트가 realm 에 **실재**한다
+2. 시나리오를 도는 계정이 **양쪽 모두에 소속**돼 있다 (한쪽만이면 같은 거짓 통과)
+
+> **이 프로젝트에서 반복되는 형태다.** `docs/learning/40` 이 "고장내지 않으면 정책이 뒤집혀도
+> 모른다" 를 다뤘다면, 여기는 **"고장을 냈는데 고장이 안 난 것처럼 보인다"** 이다.
+> 음성 결과(negative result)를 볼 때는 **그것이 방어의 결과인지 조건 불충족의 결과인지**를
+> 먼저 가려야 한다.
+
+### 4.3 왜 리뷰로 안 잡히나 — 강제 지점의 차이
 
 `downstream-demo` 와 `downstream-billing` 의 차이를 코드로 비교하면 이렇다.
 
