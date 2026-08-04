@@ -46,6 +46,7 @@ class GatewayRouteConfig {
   fun gatewayRoutes(
     builder: RouteLocatorBuilder,
     @Value("\${unigate.downstream.demo-uri}") demoUri: String,
+    @Value("\${unigate.downstream.billing-uri}") billingUri: String,
     @Value("\${unigate.iam.uri}") iamUri: String,
     // RedisRateLimiter 빈이 둘(기본·가입 전용)이라 타입만으로는 해석되지 않는다.
     // 파라미터 이름이 빈 이름과 같으면 Spring 이 이름으로 폴백해 주지만, 그 암묵적 규칙에
@@ -57,7 +58,43 @@ class GatewayRouteConfig {
   ): RouteLocator =
     builder
       .routes()
-      .route("downstream-demo") { route ->
+      // ── 2대째 다운스트림: 청구(billing) ──────────────────────────────────
+      //
+      // **`/api/**` 보다 먼저 평가돼야 한다.** `/api/billing/x` 는 아래 `downstream-demo` 라우트의
+      // `/api/**` 에도 매칭되고, `RoutePredicateHandlerMapping` 은 **처음 매칭된 하나**를 쓴다.
+      // 순서가 뒤집히면 청구 요청이 통째로 demo(8081)로 가서 404 가 나는데, 게이트웨이 로그만
+      // 보면 라우팅은 정상이라 원인이 안 보인다 — `iam-public` 이 order 를 명시한 것과 같은 이유다.
+      //
+      // 필터 구성은 demo 와 **의도적으로 같다.** 두 번째 소비자를 만들어 봐야 무엇이 진짜 공통인지
+      // 갈리기 때문이다(`paas-iam-scope-review.md` §11 — `downstream-starter` 착수 조건 = 소비자 2대).
+      // 지금 시점에서 관찰되는 공통분모는 이 체인 전체와 audience 검증·테넌트 재대조다.
+      .route("downstream-billing") { route ->
+        route
+          .order(BILLING_ROUTE_ORDER)
+          .path(BILLING_PATH_PATTERN)
+          .filters { filters ->
+            filters
+              .requestRateLimiter { config ->
+                config.rateLimiter = redisRateLimiter
+                config.keyResolver = rateLimitKeyResolver
+              }
+              // 테넌트 게이트는 제품마다 **다시 건다.** 게이트를 라우트 단위로 두는 설계라
+              // 새 제품 라우트를 추가하며 이 한 줄을 잊으면 그 제품만 조용히 열린다.
+              // (`X-Tenant-Id` strip → `X-Requested-Tenant` 대조 → 검증된 값 재주입)
+              .filter(tenantGateFilter.filter())
+              // `/api/billing/subscriptions/x` → `/subscriptions/x`
+              // demo 는 1단계(`/api`)만 떼지만 여기는 **2단계**다. 제품 접두사가 하나 더 있다.
+              .stripPrefix(BILLING_STRIPPED_SEGMENTS)
+              .removeRequestHeader(AUTHORIZATION_HEADER)
+              .removeRequestHeader(COOKIE_HEADER)
+              .tokenRelay()
+              // 회로를 demo 와 **분리**한다. 공유하면 청구 장애가 주문 API 까지 끊는다.
+              .circuitBreaker { config ->
+                config.setName("billing")
+                config.setFallbackUri("forward:/fallback/billing")
+              }
+          }.uri(billingUri)
+      }.route("downstream-demo") { route ->
         route
           .path("/api/**")
           .filters { filters ->
@@ -201,6 +238,24 @@ class GatewayRouteConfig {
 
     /** 기본 order 는 0 이다. 음수로 두어 넓은 IAM 라우트보다 먼저 평가되게 고정한다. */
     private const val IAM_PUBLIC_ROUTE_ORDER = -1
+
+    /**
+     * 청구(2대째 다운스트림) 경로. 넓은 `/api` 하위 전체 패턴보다 좁으므로 먼저 평가돼야 한다.
+     *
+     * ⚠️ KDoc 안에 `/api` + 와일드카드 두 개를 **그대로 쓰면 안 된다.** Kotlin 의 블록 주석은
+     * **중첩**되므로, 그 문자열에 들어 있는 슬래시+별표가 주석을 하나 더 열고 닫는 표시 하나를
+     * 그 중첩분이 먹어 **파일 끝까지 주석이 된다**. 증상은 엉뚱한 줄의 "Missing '}'" 와
+     * EOF 의 "Unclosed comment" 라 원인이 이 줄이라는 게 전혀 안 보인다.
+     * (같은 이유로 이 클래스의 다른 KDoc 도 "`/iam` 하위 전체 패턴" 처럼 풀어 쓴다.
+     *  블록 주석을 닫는 별표+슬래시 자체도 KDoc 본문에 쓸 수 없다 — 거기서 주석이 끝나 버린다.)
+     */
+    private const val BILLING_PATH_PATTERN = "/api/billing/**"
+
+    /** 넓은 `/api` 하위 라우트(order 0) 보다 먼저. IAM 공개 라우트와 값이 겹쳐도 경로가 달라 무관하다. */
+    private const val BILLING_ROUTE_ORDER = -2
+
+    /** `/api` + `/billing` 두 단계를 뗀다. demo 는 `/api` 한 단계만 뗀다. */
+    private const val BILLING_STRIPPED_SEGMENTS = 2
 
     /** IAM 서비스로 향하는 전체 경로 접두사. */
     private const val IAM_PATH_PATTERN = "/iam/**"

@@ -39,6 +39,20 @@ class FallbackRoutes {
       detail = "다운스트림 서비스가 일시적으로 응답하지 않습니다. 잠시 후 다시 시도하세요.",
     )
 
+  /**
+   * 2대째 다운스트림(billing) 전용. `reasonCode` 를 나누는 이유는 위 KDoc 그대로다 —
+   * **제품이 둘이 되는 순간 "다운스트림 장애" 라는 한 마디로는 어느 제품인지 좁힐 수 없다.**
+   * CB 인스턴스가 `downstream`/`billing` 으로 갈라져 있으므로 응답 입도도 같이 나눈다.
+   */
+  @Bean
+  fun billingFallbackRouter(): RouterFunction<ServerResponse> =
+    unavailableRoute(
+      path = BILLING_FALLBACK_PATH,
+      title = "Billing Unavailable",
+      reasonCode = "billing_unavailable",
+      detail = "청구 서비스가 일시적으로 응답하지 않습니다. 잠시 후 다시 시도하세요.",
+    )
+
   @Bean
   fun iamFallbackRouter(): RouterFunction<ServerResponse> =
     unavailableRoute(
@@ -66,6 +80,7 @@ class FallbackRoutes {
 
   companion object {
     private const val DOWNSTREAM_FALLBACK_PATH = "/fallback/downstream"
+    private const val BILLING_FALLBACK_PATH = "/fallback/billing"
     private const val IAM_FALLBACK_PATH = "/fallback/iam"
   }
 }
