@@ -21,6 +21,7 @@
 | `docs/PROJECT_SETUP_PLAN.md` | 설계 결정과 근거(SSOT) | ✅ |
 | `docs/IAM_PLATFORM_DECISION.md` | IAM 플랫폼 확장 결정(Phase 8 착수 전 게이트) | ✅ |
 | `docs/KEYCLOAK_REALM_SETUP.md` | Keycloak realm 구성·검증·런북 | ✅ |
+| `docs/AUTH_SEQUENCES.md` | 로그인·로그아웃·회원등록 **시퀀스 참조**(코드 경로 대조) | ✅ |
 | `docs/ALPHA_CONSOLE_SCENARIOS.md` | alpha 검증 콘솔 **재연 시나리오 가이드**(무엇을 어디까지 확인할 수 있는가) | ✅ |
 | `docs/learning/` | **개인 학습 문서** (§2) | ✅ |
 | `loadtest/README.md` | k6 부하테스트 **실행 가이드** | ✅ |
